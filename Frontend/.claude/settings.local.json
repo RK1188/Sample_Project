@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm run build:*)",
+      "Bash(npm start)",
+      "Bash(PORT=3001 npm start)",
+      "Bash(npm install:*)",
+      "Bash(taskkill:*)",
+      "Bash(curl:*)",
+      "Bash(npm run type-check:*)",
+      "Bash(npx tsc:*)",
+      "Bash(find:*)",
+      "Bash(npm run dev:*)",
+      "Bash(grep:*)",
+      "Bash(del \"D:\\vscode_workspace\\Sample_Project\\Frontend\\src\\components\\TableCellEditor.tsx\")",
+      "Bash(rm:*)",
+      "Bash(cat:*)",
+      "Bash(del \"\\?\\D:\\vscode_workspace\\Sample_Project\\Frontend\\nul\")",
+      "Bash(cmd /c:*)",
+      "Bash(powershell:*)",
+      "Bash(dir:*)"
+    ],
+    "deny": []
+  }
+}

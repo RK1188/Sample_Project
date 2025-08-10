@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Import Slides Test Instructions</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #4285f4;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #666;
+            margin-top: 30px;
+        }
+        .feature {
+            background: #f8f9fa;
+            border-left: 4px solid #4285f4;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        .steps {
+            background: #e8f5e9;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .steps ol {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .steps li {
+            margin: 10px 0;
+            line-height: 1.6;
+        }
+        .highlight {
+            background: #fff3cd;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+        .button-desc {
+            display: inline-block;
+            background: #4285f4;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 4px;
+            margin: 0 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 Slide Import Feature - Test Guide</h1>
+        
+        <h2>✨ New Features Added</h2>
+        
+        <div class="feature">
+            <h3>📥 Import Slides Button in Editor</h3>
+            <p>Located at the bottom-right of the slide editor, next to the zoom controls. This allows you to import PPTX or ODP files directly into your current presentation.</p>
+        </div>
+        
+        <div class="feature">
+            <h3>📋 Import Button in Slide Navigation</h3>
+            <p>Added an import icon (📥) in the slide navigation panel header, allowing quick access to import functionality from the sidebar.</p>
+        </div>
+        
+        <div class="feature">
+            <h3>🔄 Merge Presentations</h3>
+            <p>Instead of replacing your current presentation, imported slides are added to your existing slides, allowing you to merge multiple presentations.</p>
+        </div>
+        
+        <h2>📝 How to Test the Import Feature</h2>
+        
+        <div class="steps">
+            <h3>Method 1: Import from Editor</h3>
+            <ol>
+                <li>Open the application at <span class="highlight">http://localhost:8082</span></li>
+                <li>Create a new presentation or open an existing one</li>
+                <li>Look at the <span class="highlight">bottom-right corner</span> of the editor</li>
+                <li>Click the <span class="button-desc">📥 Import Slides</span> button</li>
+                <li>Select a PPTX or ODP file from your computer</li>
+                <li>The slides from the file will be added to your current presentation</li>
+                <li>You'll see a success notification showing how many slides were imported</li>
+            </ol>
+        </div>
+        
+        <div class="steps">
+            <h3>Method 2: Import from Slide Navigation</h3>
+            <ol>
+                <li>Look at the left sidebar (Slide Navigation panel)</li>
+                <li>In the header next to "Slides", find the <span class="button-desc">📥</span> button</li>
+                <li>Click it to open the file picker</li>
+                <li>Select your PPTX or ODP file</li>
+                <li>Slides will be imported and appear in the thumbnails list</li>
+            </ol>
+        </div>
+        
+        <h2>🎨 What Gets Imported</h2>
+        <ul>
+            <li>✅ Text content and formatting</li>
+            <li>✅ Shapes (rectangles, circles, etc.)</li>
+            <li>✅ Colors and styles</li>
+            <li>✅ Slide backgrounds</li>
+            <li>✅ WordArt and special text effects</li>
+            <li>✅ Lines and connectors</li>
+            <li>✅ Slide layout and positioning</li>
+        </ul>
+        
+        <h2>⚠️ Important Notes</h2>
+        <ul>
+            <li>Imported slides get new unique IDs to avoid conflicts</li>
+            <li>Each imported slide is numbered (e.g., "Imported Slide 1", "Imported Slide 2")</li>
+            <li>You can import multiple files - each import adds to your presentation</li>
+            <li>After import, you can edit, reorder, or delete the imported slides just like any other slide</li>
+            <li>The import process shows a loading state while processing the file</li>
+            <li>Error messages appear if the file format is not supported</li>
+        </ul>
+        
+        <h2>🚀 Quick Test Scenario</h2>
+        <div class="steps">
+            <ol>
+                <li>Create 2-3 slides in the app</li>
+                <li>Save or export this as "presentation1.pptx"</li>
+                <li>Create a new presentation with different slides</li>
+                <li>Use the import feature to bring in "presentation1.pptx"</li>
+                <li>Verify all slides from both presentations are now combined</li>
+                <li>Test editing the imported slides</li>
+                <li>Try grouping shapes and connecting them with connectors</li>
+            </ol>
+        </div>
+        
+        <h2>✨ Enhanced UI Features</h2>
+        <ul>
+            <li>Loading spinner during import</li>
+            <li>Success notifications with slide count</li>
+            <li>Error messages for unsupported files</li>
+            <li>Disabled state during import to prevent multiple operations</li>
+            <li>Automatic file input reset after import</li>
+        </ul>
+    </div>
+</body>
+</html>
