@@ -161,11 +161,13 @@ const SlideEditor: React.FC<SlideEditorProps> = ({ className = '' }) => {
   const handleDeleteSelected = useCallback(() => {
     if (!currentSlide || state.drawingState.selectedElements.length === 0) return;
     
-    state.drawingState.selectedElements.forEach(elementId => {
-      dispatch({
-        type: 'DELETE_ELEMENT',
-        payload: { slideId: currentSlide.id, elementId }
-      });
+    // Use batch delete for better performance and to handle connected connectors
+    dispatch({
+      type: 'DELETE_ELEMENTS',
+      payload: { 
+        slideId: currentSlide.id, 
+        elementIds: state.drawingState.selectedElements 
+      }
     });
   }, [currentSlide, state.drawingState.selectedElements, dispatch]);
 

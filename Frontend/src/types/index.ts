@@ -197,6 +197,7 @@ export interface LineElement extends SlideElement {
   strokeStyle: 'solid' | 'dashed' | 'dotted';
   // Connector properties
   isConnector?: boolean;
+  connectorType?: 'straight' | 'elbow' | 'curved';
   startElementId?: string;
   endElementId?: string;
   startConnectionPoint?: 'top' | 'bottom' | 'left' | 'right' | 'center';

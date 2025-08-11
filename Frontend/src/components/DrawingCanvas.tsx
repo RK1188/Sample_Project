@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { v4 as uuidv4 } from 'uuid';
 import { SlideElement } from '../types';
 import PieShape from './PieShape';
-import ConnectorLine from './ConnectorLine';
+import EnhancedConnectorLine from './EnhancedConnectorLine';
 import ConnectionPoints from './ConnectionPoints';
 import ShapeRenderer from './ShapeRenderer';
 import TableRenderer from './TableRenderer';
@@ -696,11 +696,12 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       case 'line':
         if ((element as any).isConnector) {
           return (
-            <ConnectorLine
+            <EnhancedConnectorLine
               key={element.id}
               id={element.id}
               startPoint={element.startPoint || { x: 0, y: 0 }}
               endPoint={element.endPoint || { x: 100, y: 100 }}
+              connectorType={(element as any).connectorType || 'straight'}
               stroke={element.stroke || '#333333'}
               strokeWidth={element.strokeWidth || 2}
               strokeStyle={element.strokeStyle}
@@ -1249,6 +1250,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                           id: uuidv4(),
                           type: 'line' as const,
                           isConnector: true,
+                          connectorType: state.connectorType || 'straight',
                           startPoint: connectionState.startPosition,
                           endPoint: position,
                           startElementId: connectionState.startElementId,

@@ -75,7 +75,10 @@ const EnhancedToolbar: React.FC<EnhancedToolbarProps> = ({ className = '' }) => 
   const [showShapeMenu, setShowShapeMenu] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('basic');
   const [menuPosition, setMenuPosition] = useState({ top: 60, left: 220 });
+  const [showConnectorMenu, setShowConnectorMenu] = useState(false);
+  const [selectedConnectorType, setSelectedConnectorType] = useState<'straight' | 'elbow' | 'curved'>('straight');
   const shapeButtonRef = useRef<HTMLButtonElement>(null);
+  const connectorButtonRef = useRef<HTMLButtonElement>(null);
   const { tools } = state;
   const { selectedElements } = state.drawingState;
   const currentSlide = state.presentation.slides[state.presentation.currentSlideIndex];
@@ -90,6 +93,22 @@ const EnhancedToolbar: React.FC<EnhancedToolbarProps> = ({ className = '' }) => 
       });
     }
   }, []);
+
+  // Close menus when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (showConnectorMenu && !target.closest('.shape-menu') && !target.closest('.toolbar-dropdown')) {
+        setShowConnectorMenu(false);
+      }
+      if (showShapeMenu && !target.closest('.shape-menu') && !target.closest('.toolbar-dropdown')) {
+        setShowShapeMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showConnectorMenu, showShapeMenu]);
 
   // Handle tool selection
   const handleToolSelect = useCallback((toolId: string) => {
@@ -162,11 +181,13 @@ const EnhancedToolbar: React.FC<EnhancedToolbarProps> = ({ className = '' }) => 
   const handleDelete = useCallback(() => {
     if (!currentSlide || selectedElements.length === 0) return;
     
-    selectedElements.forEach(elementId => {
-      dispatch({
-        type: 'DELETE_ELEMENT',
-        payload: { slideId: currentSlide.id, elementId }
-      });
+    // Use batch delete for better performance and to handle connected connectors
+    dispatch({
+      type: 'DELETE_ELEMENTS',
+      payload: { 
+        slideId: currentSlide.id, 
+        elementIds: selectedElements 
+      }
     });
   }, [currentSlide, selectedElements, dispatch]);
 
@@ -286,14 +307,190 @@ const EnhancedToolbar: React.FC<EnhancedToolbarProps> = ({ className = '' }) => 
           <span className="toolbar-icon">📏</span>
           <span className="toolbar-label">Line</span>
         </button>
-        <button 
-          className={`toolbar-button ${state.drawingState.currentTool.id === 'connector' ? 'active' : ''}`}
-          onClick={() => handleToolSelect('connector')}
-          title="Connector"
-        >
-          <span className="toolbar-icon">⇔</span>
-          <span className="toolbar-label">Connector</span>
-        </button>
+        <div className="toolbar-dropdown">
+          <button 
+            ref={connectorButtonRef}
+            className={`toolbar-button ${state.drawingState.currentTool.id === 'connector' ? 'active' : ''}`}
+            onClick={() => {
+              handleToolSelect('connector');
+              setShowConnectorMenu(!showConnectorMenu);
+              if (!showConnectorMenu && connectorButtonRef.current) {
+                const rect = connectorButtonRef.current.getBoundingClientRect();
+                setMenuPosition({
+                  top: rect.bottom + 4,
+                  left: Math.max(0, rect.left)
+                });
+              }
+            }}
+            title="Connector"
+          >
+            <span className="toolbar-icon">
+              {selectedConnectorType === 'elbow' ? '┐' : selectedConnectorType === 'curved' ? '〰' : '⇔'}
+            </span>
+            <span className="toolbar-label">Connector</span>
+            <span className="dropdown-arrow">▼</span>
+          </button>
+          
+          {/* Connector Type Menu - Styled like Shapes Menu */}
+          {showConnectorMenu && (
+            <div 
+              className="shape-menu"
+              style={{ 
+                position: 'fixed',
+                top: menuPosition.top,
+                left: menuPosition.left,
+                zIndex: 1000
+              }}
+            >
+              <div className="shape-menu-header">
+                <h3>Connectors</h3>
+                <button 
+                  className="close-menu"
+                  onClick={() => setShowConnectorMenu(false)}
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="shape-grid connector-grid">
+                <button
+                  className={`shape-item ${selectedConnectorType === 'straight' ? 'selected' : ''}`}
+                  onClick={() => {
+                    setSelectedConnectorType('straight');
+                    dispatch({ 
+                      type: 'SET_CONNECTOR_TYPE', 
+                      payload: 'straight' 
+                    });
+                    handleToolSelect('connector');
+                    setShowConnectorMenu(false);
+                  }}
+                  title="Straight Connector"
+                >
+                  <div className="connector-preview">
+                    <svg width="60" height="40" viewBox="0 0 60 40">
+                      <line x1="10" y1="20" x2="50" y2="20" stroke="#5f6368" strokeWidth="2"/>
+                      <polygon points="50,20 45,17 45,23" fill="#5f6368"/>
+                    </svg>
+                  </div>
+                  <span className="shape-name">Straight</span>
+                </button>
+                
+                <button
+                  className={`shape-item ${selectedConnectorType === 'elbow' ? 'selected' : ''}`}
+                  onClick={() => {
+                    setSelectedConnectorType('elbow');
+                    dispatch({ 
+                      type: 'SET_CONNECTOR_TYPE', 
+                      payload: 'elbow' 
+                    });
+                    handleToolSelect('connector');
+                    setShowConnectorMenu(false);
+                  }}
+                  title="Elbow Connector"
+                >
+                  <div className="connector-preview">
+                    <svg width="60" height="40" viewBox="0 0 60 40">
+                      <path d="M 10 30 L 30 30 L 30 10 L 50 10" stroke="#5f6368" strokeWidth="2" fill="none"/>
+                      <polygon points="50,10 45,7 45,13" fill="#5f6368"/>
+                    </svg>
+                  </div>
+                  <span className="shape-name">Elbow</span>
+                </button>
+                
+                <button
+                  className={`shape-item ${selectedConnectorType === 'curved' ? 'selected' : ''}`}
+                  onClick={() => {
+                    setSelectedConnectorType('curved');
+                    dispatch({ 
+                      type: 'SET_CONNECTOR_TYPE', 
+                      payload: 'curved' 
+                    });
+                    handleToolSelect('connector');
+                    setShowConnectorMenu(false);
+                  }}
+                  title="Curved Connector"
+                >
+                  <div className="connector-preview">
+                    <svg width="60" height="40" viewBox="0 0 60 40">
+                      <path d="M 10 20 Q 30 5, 50 20" stroke="#5f6368" strokeWidth="2" fill="none"/>
+                      <polygon points="50,20 45,17 45,23" fill="#5f6368"/>
+                    </svg>
+                  </div>
+                  <span className="shape-name">Curved</span>
+                </button>
+                
+                <button
+                  className={`shape-item ${selectedConnectorType === 'straight' ? 'selected' : ''}`}
+                  onClick={() => {
+                    setSelectedConnectorType('straight');
+                    dispatch({ 
+                      type: 'SET_CONNECTOR_TYPE', 
+                      payload: 'straight' 
+                    });
+                    handleToolSelect('connector');
+                    setShowConnectorMenu(false);
+                  }}
+                  title="Straight Arrow (Both)"
+                >
+                  <div className="connector-preview">
+                    <svg width="60" height="40" viewBox="0 0 60 40">
+                      <line x1="10" y1="20" x2="50" y2="20" stroke="#5f6368" strokeWidth="2"/>
+                      <polygon points="10,20 15,17 15,23" fill="#5f6368"/>
+                      <polygon points="50,20 45,17 45,23" fill="#5f6368"/>
+                    </svg>
+                  </div>
+                  <span className="shape-name">Double Arrow</span>
+                </button>
+                
+                <button
+                  className={`shape-item ${selectedConnectorType === 'elbow' ? 'selected' : ''}`}
+                  onClick={() => {
+                    setSelectedConnectorType('elbow');
+                    dispatch({ 
+                      type: 'SET_CONNECTOR_TYPE', 
+                      payload: 'elbow' 
+                    });
+                    handleToolSelect('connector');
+                    setShowConnectorMenu(false);
+                  }}
+                  title="Elbow Arrow (Both)"
+                >
+                  <div className="connector-preview">
+                    <svg width="60" height="40" viewBox="0 0 60 40">
+                      <path d="M 10 30 L 30 30 L 30 10 L 50 10" stroke="#5f6368" strokeWidth="2" fill="none"/>
+                      <polygon points="10,30 15,27 15,33" fill="#5f6368"/>
+                      <polygon points="50,10 45,7 45,13" fill="#5f6368"/>
+                    </svg>
+                  </div>
+                  <span className="shape-name">Elbow Double</span>
+                </button>
+                
+                <button
+                  className={`shape-item ${selectedConnectorType === 'curved' ? 'selected' : ''}`}
+                  onClick={() => {
+                    setSelectedConnectorType('curved');
+                    dispatch({ 
+                      type: 'SET_CONNECTOR_TYPE', 
+                      payload: 'curved' 
+                    });
+                    handleToolSelect('connector');
+                    setShowConnectorMenu(false);
+                  }}
+                  title="Curved Arrow (Both)"
+                >
+                  <div className="connector-preview">
+                    <svg width="60" height="40" viewBox="0 0 60 40">
+                      <path d="M 10 20 Q 30 5, 50 20" stroke="#5f6368" strokeWidth="2" fill="none"/>
+                      <polygon points="10,20 15,17 15,23" fill="#5f6368"/>
+                      <polygon points="50,20 45,17 45,23" fill="#5f6368"/>
+                    </svg>
+                  </div>
+                  <span className="shape-name">Curved Double</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
         <button 
           className={`toolbar-button ${state.drawingState.currentTool.id === 'image' ? 'active' : ''}`}
           onClick={() => handleToolSelect('image')}

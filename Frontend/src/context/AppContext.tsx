@@ -24,6 +24,7 @@ export type AppAction =
   | { type: 'ADD_ELEMENT'; payload: { slideId: string; element: SlideElementType } }
   | { type: 'UPDATE_ELEMENT'; payload: { slideId: string; elementId: string; updates: Partial<SlideElementType> } }
   | { type: 'DELETE_ELEMENT'; payload: { slideId: string; elementId: string } }
+  | { type: 'DELETE_ELEMENTS'; payload: { slideId: string; elementIds: string[] } }
   | { type: 'SELECT_ELEMENTS'; payload: string[] }
   | { type: 'DESELECT_ALL' }
   | { type: 'GROUP_ELEMENTS'; payload: { slideId: string; elementIds: string[] } }
@@ -37,6 +38,7 @@ export type AppAction =
   | { type: 'REDO' }
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'SET_ERROR'; payload: string | null }
+  | { type: 'SET_CONNECTOR_TYPE'; payload: 'straight' | 'elbow' | 'curved' }
   | { type: 'TOGGLE_THEME' }
   | { type: 'RESET_APP' };
 
@@ -108,6 +110,7 @@ export interface AppState {
   viewportState: ViewportState;
   uiState: UIState;
   tools: Tool[];
+  connectorType: 'straight' | 'elbow' | 'curved';
   history: {
     past: Presentation[];
     future: Presentation[];
@@ -120,6 +123,7 @@ const initialState: AppState = {
   viewportState: initialViewportState,
   uiState: initialUIState,
   tools: initialTools,
+  connectorType: 'straight',
   history: {
     past: [],
     future: []
@@ -339,9 +343,28 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
       };
     }
 
-    case 'DELETE_ELEMENT': {
-      const { slideId, elementId } = action.payload;
+    case 'DELETE_ELEMENTS': {
+      const { slideId, elementIds } = action.payload;
       const stateWithHistory = saveToHistory(state);
+      
+      // Find the slide
+      const targetSlide = stateWithHistory.presentation.slides.find(s => s.id === slideId);
+      if (!targetSlide) return stateWithHistory;
+      
+      // Find all connector IDs that are connected to any of the elements being deleted
+      const connectedConnectorIds = targetSlide.elements
+        .filter(el => {
+          if (el.type === 'line' && (el as any).isConnector) {
+            const connector = el as any;
+            return elementIds.includes(connector.startElementId) || elementIds.includes(connector.endElementId);
+          }
+          return false;
+        })
+        .map(el => el.id);
+      
+      // Create a set of all element IDs to delete (original elements + connected connectors)
+      const elementsToDelete = new Set([...elementIds, ...connectedConnectorIds]);
+      
       return {
         ...stateWithHistory,
         presentation: {
@@ -350,7 +373,7 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
             slide.id === slideId 
               ? {
                   ...slide,
-                  elements: slide.elements.filter(element => element.id !== elementId),
+                  elements: slide.elements.filter(element => !elementsToDelete.has(element.id)),
                   updatedAt: new Date()
                 }
               : slide
@@ -367,7 +390,59 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
         },
         drawingState: {
           ...state.drawingState,
-          selectedElements: state.drawingState.selectedElements.filter(id => id !== elementId)
+          selectedElements: state.drawingState.selectedElements.filter(id => !elementsToDelete.has(id))
+        }
+      };
+    }
+
+    case 'DELETE_ELEMENT': {
+      const { slideId, elementId } = action.payload;
+      const stateWithHistory = saveToHistory(state);
+      
+      // Find the slide
+      const targetSlide = stateWithHistory.presentation.slides.find(s => s.id === slideId);
+      if (!targetSlide) return stateWithHistory;
+      
+      // Find all connector IDs that are connected to the element being deleted
+      const connectedConnectorIds = targetSlide.elements
+        .filter(el => {
+          if (el.type === 'line' && (el as any).isConnector) {
+            const connector = el as any;
+            return connector.startElementId === elementId || connector.endElementId === elementId;
+          }
+          return false;
+        })
+        .map(el => el.id);
+      
+      // Create a set of all element IDs to delete (original element + connected connectors)
+      const elementsToDelete = new Set([elementId, ...connectedConnectorIds]);
+      
+      return {
+        ...stateWithHistory,
+        presentation: {
+          ...stateWithHistory.presentation,
+          slides: stateWithHistory.presentation.slides.map(slide => 
+            slide.id === slideId 
+              ? {
+                  ...slide,
+                  elements: slide.elements.filter(element => !elementsToDelete.has(element.id)),
+                  updatedAt: new Date()
+                }
+              : slide
+          ),
+          metadata: state.presentation.metadata ? {
+            ...state.presentation.metadata,
+            updatedAt: new Date()
+          } : {
+            author: 'Unknown',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            version: '1.0.0'
+          }
+        },
+        drawingState: {
+          ...state.drawingState,
+          selectedElements: state.drawingState.selectedElements.filter(id => !elementsToDelete.has(id))
         }
       };
     }
@@ -666,6 +741,12 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
           ...state.uiState,
           error: action.payload
         }
+      };
+
+    case 'SET_CONNECTOR_TYPE':
+      return {
+        ...state,
+        connectorType: action.payload
       };
 
     case 'TOGGLE_THEME':
