@@ -713,6 +713,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
               startConnectionPoint={(element as any).startConnectionPoint}
               endConnectionPoint={(element as any).endConnectionPoint}
               allElements={currentSlide?.elements || []}
+              customPathData={(element as any).pathData}
+              elbowPoints={(element as any).elbowPoints}
               onClick={(e) => handleElementClick(element.id, e)}
               onUpdate={(updates) => {
                 if (!currentSlide) return;

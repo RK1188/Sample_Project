@@ -1,9 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { Line, Circle, Group, Path } from 'react-konva';
 import Konva from 'konva';
 import { SlideElement, Point } from '../types';
 import { getElementConnectionPoint, calculateGroupBounds } from '../utils/groupUtils';
 import { routePowerPointElbowConnector } from '../utils/powerPointConnectorRouting';
+import ElbowConnectorAdjustmentPoints from './ElbowConnectorAdjustmentPoints';
 
 export type ConnectorType = 'straight' | 'elbow' | 'curved';
 
@@ -596,7 +597,7 @@ function generatePowerPointElbowPath(
   startElementId?: string,
   endElementId?: string,
   connectorId?: string
-): string {
+): { path: string; segments: Array<{ start: Point; end: Point }> } {
   // Find the connected elements
   const startElement = startElementId ? allElements.find(el => el.id === startElementId) : null;
   const endElement = endElementId ? allElements.find(el => el.id === endElementId) : null;
@@ -613,14 +614,51 @@ function generatePowerPointElbowPath(
         connectorId
       );
       
-      return routing.path;
+      return { path: routing.path, segments: routing.segments };
     } catch (error) {
       console.warn('PowerPoint routing failed, falling back to standard routing:', error);
     }
   }
 
   // Fallback to the existing elbow routing
-  return generateElbowPath(start, end, startConnectionPoint, endConnectionPoint, allElements, startElementId, endElementId, connectorId);
+  const fallbackPath = generateElbowPath(start, end, startConnectionPoint, endConnectionPoint, allElements, startElementId, endElementId, connectorId);
+  
+  // Parse segments from the fallback path for consistency
+  const segments = parseSegmentsFromPath(fallbackPath, start);
+  
+  return { path: fallbackPath, segments };
+}
+
+/**
+ * Parse segments from SVG path data
+ */
+function parseSegmentsFromPath(pathData: string, startPoint: Point): Array<{ start: Point; end: Point }> {
+  const segments: Array<{ start: Point; end: Point }> = [];
+  
+  // Simple parser for M and L commands
+  const commands = pathData.match(/[ML]\s*([\d.-]+)\s+([\d.-]+)/g);
+  if (!commands) return segments;
+  
+  let currentPoint = startPoint;
+  
+  for (let i = 1; i < commands.length; i++) {
+    const match = commands[i].match(/([\d.-]+)\s+([\d.-]+)/);
+    if (match) {
+      const nextPoint = {
+        x: parseFloat(match[1]),
+        y: parseFloat(match[2])
+      };
+      
+      segments.push({
+        start: { ...currentPoint },
+        end: { ...nextPoint }
+      });
+      
+      currentPoint = nextPoint;
+    }
+  }
+  
+  return segments;
 }
 
 interface EnhancedConnectorLineProps {
@@ -639,6 +677,8 @@ interface EnhancedConnectorLineProps {
   startConnectionPoint?: string;
   endConnectionPoint?: string;
   allElements: SlideElement[];
+  customPathData?: string; // Custom path data from adjustment
+  elbowPoints?: Point[]; // Custom elbow adjustment points
   onClick: (e: Konva.KonvaEventObject<MouseEvent>) => void;
   onUpdate: (updates: any) => void;
 }
@@ -659,6 +699,8 @@ const EnhancedConnectorLine: React.FC<EnhancedConnectorLineProps> = ({
   startConnectionPoint,
   endConnectionPoint,
   allElements,
+  customPathData,
+  elbowPoints,
   onClick,
   onUpdate,
 }) => {
@@ -687,13 +729,19 @@ const EnhancedConnectorLine: React.FC<EnhancedConnectorLineProps> = ({
   }, [startPoint, endPoint, startElementId, endElementId, startConnectionPoint, endConnectionPoint, allElements]);
 
   // Generate path based on connector type
-  const pathData = useMemo(() => {
+  const pathInfo = useMemo(() => {
+    // If custom path data is available, use it (from adjustment)
+    if (customPathData && connectorType === 'elbow') {
+      const customSegments = parseSegmentsFromPath(customPathData, actualPoints.start);
+      return { path: customPathData, segments: customSegments };
+    }
+    
     const { start, end } = actualPoints;
     
     switch (connectorType) {
       case 'straight':
         // Simple straight line
-        return null; // Will use Line component instead
+        return { path: null, segments: [] }; // Will use Line component instead
         
       case 'elbow':
         return generatePowerPointElbowPath(start, end, startConnectionPoint, endConnectionPoint, allElements, startElementId, endElementId, id);
@@ -760,12 +808,25 @@ const EnhancedConnectorLine: React.FC<EnhancedConnectorLineProps> = ({
           }
         }
         
-        return `M ${start.x} ${start.y} C ${control1.x} ${control1.y}, ${control2.x} ${control2.y}, ${end.x} ${end.y}`;
+        const curvePath = `M ${start.x} ${start.y} C ${control1.x} ${control1.y}, ${control2.x} ${control2.y}, ${end.x} ${end.y}`;
+        return { path: curvePath, segments: [] }; // Curved connectors don't have adjustment points
         
       default:
-        return null;
+        return { path: null, segments: [] };
     }
-  }, [actualPoints, connectorType, startConnectionPoint, endConnectionPoint]);
+  }, [actualPoints, connectorType, startConnectionPoint, endConnectionPoint, allElements, startElementId, endElementId, id, customPathData]);
+
+  // Extract path and segments
+  const pathData = pathInfo.path;
+  const segments = pathInfo.segments;
+
+  // Handle adjustment point changes
+  const handleAdjustmentChange = useCallback((adjustmentPoints: Point[], newPathData: string) => {
+    onUpdate({
+      elbowPoints: adjustmentPoints,
+      pathData: newPathData
+    });
+  }, [onUpdate]);
 
   // Calculate arrow points for path-based connectors
   const getPathArrowAngle = (pathData: string, isStart: boolean): number => {
@@ -972,6 +1033,17 @@ const EnhancedConnectorLine: React.FC<EnhancedConnectorLineProps> = ({
             listening={false}
           />
         </>
+      )}
+      
+      {/* Elbow connector adjustment points */}
+      {isSelected && connectorType === 'elbow' && pathData && segments.length > 0 && (
+        <ElbowConnectorAdjustmentPoints
+          connectorId={id}
+          pathData={pathData}
+          segments={segments}
+          visible={true}
+          onAdjustmentChange={handleAdjustmentChange}
+        />
       )}
     </Group>
   );
