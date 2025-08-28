@@ -175,25 +175,48 @@ export function updateConnectorPositions(
     const connectorElement = connector as any;
     let startPoint = connectorElement.startPoint;
     let endPoint = connectorElement.endPoint;
+    let connectionChanged = false;
 
     // Update start point if connected to moved element
     if (connectorElement.startElementId === movedElement.id && connectorElement.startConnectionPoint) {
-      startPoint = getElementConnectionPoint(movedElement, connectorElement.startConnectionPoint);
+      const newStartPoint = getElementConnectionPoint(movedElement, connectorElement.startConnectionPoint);
+      if (startPoint.x !== newStartPoint.x || startPoint.y !== newStartPoint.y) {
+        startPoint = newStartPoint;
+        connectionChanged = true;
+      }
     }
 
     // Update end point if connected to moved element
     if (connectorElement.endElementId === movedElement.id && connectorElement.endConnectionPoint) {
-      endPoint = getElementConnectionPoint(movedElement, connectorElement.endConnectionPoint);
+      const newEndPoint = getElementConnectionPoint(movedElement, connectorElement.endConnectionPoint);
+      if (endPoint.x !== newEndPoint.x || endPoint.y !== newEndPoint.y) {
+        endPoint = newEndPoint;
+        connectionChanged = true;
+      }
     }
 
     // Only add update if positions actually changed
-    if (startPoint !== connectorElement.startPoint || endPoint !== connectorElement.endPoint) {
+    if (connectionChanged) {
+      const updateData: any = {
+        startPoint,
+        endPoint
+      };
+
+      // CRITICAL FIX: Clear custom path data and adjustment points when connection points change
+      // This prevents connectors from "splitting" or becoming invalid during shape movement
+      if (connectorElement.connectorType === 'elbow') {
+        updateData.pathData = undefined;
+        updateData.elbowPoints = undefined;
+      }
+      
+      // For curved connectors, also clear any custom path data
+      if (connectorElement.connectorType === 'curved') {
+        updateData.pathData = undefined;
+      }
+
       updates.push({
         elementId: connector.id,
-        updates: {
-          startPoint,
-          endPoint
-        }
+        updates: updateData
       });
     }
   });

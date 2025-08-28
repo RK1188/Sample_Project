@@ -730,13 +730,52 @@ const EnhancedConnectorLine: React.FC<EnhancedConnectorLineProps> = ({
 
   // Generate path based on connector type
   const pathInfo = useMemo(() => {
-    // If custom path data is available, use it (from adjustment)
-    if (customPathData && connectorType === 'elbow') {
-      const customSegments = parseSegmentsFromPath(customPathData, actualPoints.start);
-      return { path: customPathData, segments: customSegments };
-    }
-    
     const { start, end } = actualPoints;
+    
+    // If custom path data is available and connection points haven't changed significantly, use it
+    if (customPathData && (connectorType === 'elbow' || connectorType === 'curved')) {
+      // For elbow connectors, validate segments match connection points
+      if (connectorType === 'elbow') {
+        const customSegments = parseSegmentsFromPath(customPathData, actualPoints.start);
+        if (customSegments.length > 0) {
+          const pathStart = customSegments[0].start;
+          const pathEnd = customSegments[customSegments.length - 1].end;
+          
+          // Check if path start/end points are close to actual connection points
+          const tolerance = 5; // Allow small differences
+          const startMatches = Math.abs(pathStart.x - start.x) < tolerance && Math.abs(pathStart.y - start.y) < tolerance;
+          const endMatches = Math.abs(pathEnd.x - end.x) < tolerance && Math.abs(pathEnd.y - end.y) < tolerance;
+          
+          // Only use custom path data if it matches current connection points
+          if (startMatches && endMatches) {
+            return { path: customPathData, segments: customSegments };
+          }
+        }
+      }
+      
+      // For curved connectors, validate path start/end matches connection points
+      if (connectorType === 'curved') {
+        // Parse start and end points from curved path (SVG path with C command)
+        const pathCommands = customPathData.match(/[MC]\s*([\d.-]+)\s+([\d.-]+)/g);
+        if (pathCommands && pathCommands.length >= 2) {
+          const startCommand = pathCommands[0].match(/([\d.-]+)\s+([\d.-]+)/);
+          const endCommand = pathCommands[pathCommands.length - 1].match(/([\d.-]+)\s+([\d.-]+)/);
+          
+          if (startCommand && endCommand) {
+            const pathStart = { x: parseFloat(startCommand[1]), y: parseFloat(startCommand[2]) };
+            const pathEnd = { x: parseFloat(endCommand[1]), y: parseFloat(endCommand[2]) };
+            
+            const tolerance = 5;
+            const startMatches = Math.abs(pathStart.x - start.x) < tolerance && Math.abs(pathStart.y - start.y) < tolerance;
+            const endMatches = Math.abs(pathEnd.x - end.x) < tolerance && Math.abs(pathEnd.y - end.y) < tolerance;
+            
+            if (startMatches && endMatches) {
+              return { path: customPathData, segments: [] }; // Curved connectors don't have adjustment segments
+            }
+          }
+        }
+      }
+    }
     
     switch (connectorType) {
       case 'straight':
@@ -822,11 +861,27 @@ const EnhancedConnectorLine: React.FC<EnhancedConnectorLineProps> = ({
 
   // Handle adjustment point changes
   const handleAdjustmentChange = useCallback((adjustmentPoints: Point[], newPathData: string) => {
-    onUpdate({
+    // CRITICAL: Preserve all connector connection metadata when updating adjustment points
+    // Only update if the path data is actually different to prevent unnecessary re-renders
+    const updates: any = {
       elbowPoints: adjustmentPoints,
-      pathData: newPathData
-    });
-  }, [onUpdate]);
+      pathData: newPathData,
+      // Always preserve connection properties to prevent disconnection
+      startElementId,
+      endElementId,
+      startConnectionPoint,
+      endConnectionPoint,
+      // Preserve other connector properties
+      connectorType,
+      arrowStart,
+      arrowEnd,
+      // Also preserve the connection points to maintain consistency
+      startPoint: actualPoints.start,
+      endPoint: actualPoints.end
+    };
+    
+    onUpdate(updates);
+  }, [onUpdate, startElementId, endElementId, startConnectionPoint, endConnectionPoint, connectorType, arrowStart, arrowEnd, actualPoints]);
 
   // Calculate arrow points for path-based connectors
   const getPathArrowAngle = (pathData: string, isStart: boolean): number => {
