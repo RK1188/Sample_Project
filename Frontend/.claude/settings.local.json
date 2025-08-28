@@ -20,7 +20,8 @@
       "Bash(cmd /c:*)",
       "Bash(powershell:*)",
       "Bash(dir:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }
