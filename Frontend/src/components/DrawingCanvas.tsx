@@ -15,6 +15,13 @@ import ChartRenderer from './ChartRenderer';
 import ChartModal from './ChartModal';
 import AdjustmentHandles from './AdjustmentHandles';
 import { updateConnectorPositions } from '../utils/groupUtils';
+import {
+  calculateShortestPath,
+  generatePreviewPath,
+  findTargetElementUnderMouse,
+  completeConnectorCreation,
+  getBestConnectionPoint
+} from '../utils/dynamicConnectorCreation';
 
 interface DrawingCanvasProps {
   slideId: string;
@@ -64,13 +71,94 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const gridSize = 10; // Grid size in pixels
   
   const currentSlide = state.presentation.slides.find(s => s.id === slideId);
-  const { currentTool, selectedElements } = state.drawingState;
+  const { currentTool, selectedElements, connectorCreation } = state.drawingState;
   
   // Helper function to snap to grid
   const snapToGridValue = (value: number): number => {
     if (!snapToGrid) return value;
     return Math.round(value / gridSize) * gridSize;
   };
+
+  // Handle dynamic connector creation mouse events
+  const handleConnectorMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (!connectorCreation.isActive || !connectorCreation.startPosition || !currentSlide) return;
+
+    const stage = e.target.getStage();
+    const pos = stage?.getPointerPosition();
+    if (!pos) return;
+
+    // Find target element under mouse (excluding start element and connectors)
+    const targetElement = findTargetElementUnderMouse(pos, currentSlide.elements, connectorCreation.startElementId || '');
+    let targetConnectionPoint: string | undefined;
+
+    if (targetElement) {
+      // Get the best connection point on the target element
+      const bestPoint = getBestConnectionPoint(targetElement, pos);
+      targetConnectionPoint = bestPoint.connectionPoint;
+    }
+
+    // Update connector creation state with current mouse position
+    dispatch({
+      type: 'UPDATE_CONNECTOR_CREATION',
+      payload: {
+        mousePosition: pos,
+        targetElement: targetElement || undefined,
+        targetConnectionPoint
+      }
+    });
+  }, [connectorCreation, currentSlide, dispatch]);
+
+  const handleConnectorMouseUp = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (!connectorCreation.isActive || !connectorCreation.startElementId || !currentSlide) return;
+
+    const stage = e.target.getStage();
+    const pos = stage?.getPointerPosition();
+    if (!pos) return;
+
+    // Find target element under mouse
+    const targetElement = findTargetElementUnderMouse(pos, currentSlide.elements, connectorCreation.startElementId);
+    
+    if (targetElement && targetElement.id !== connectorCreation.startElementId) {
+      // Complete the connection
+      const startElement = currentSlide.elements.find(el => el.id === connectorCreation.startElementId);
+      if (startElement) {
+        const result = calculateShortestPath(startElement, targetElement, currentSlide.elements);
+        
+        // Create the connector element
+        const connectorElement = {
+          id: uuidv4(),
+          type: 'line' as const,
+          isConnector: true,
+          connectorType: state.connectorType || 'elbow',
+          startPoint: result.startPoint,
+          endPoint: result.endPoint,
+          startElementId: result.startElementId,
+          endElementId: result.endElementId,
+          startConnectionPoint: result.startConnectionPoint,
+          endConnectionPoint: result.endConnectionPoint,
+          stroke: '#333333',
+          strokeWidth: 2,
+          strokeStyle: 'solid' as const,
+          arrowEnd: true,
+          x: 0,
+          y: 0,
+          rotation: 0,
+          pathData: result.path
+        };
+        
+        dispatch({
+          type: 'ADD_ELEMENT',
+          payload: {
+            slideId: currentSlide.id,
+            element: connectorElement as any
+          }
+        });
+      }
+    }
+
+    // Reset connector creation state
+    dispatch({ type: 'CANCEL_CONNECTOR_CREATION' });
+  }, [connectorCreation, currentSlide, dispatch, state.connectorType]);
 
   // Load images
   useEffect(() => {
@@ -103,6 +191,12 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const stage = e.target.getStage();
     const pos = stage?.getPointerPosition();
     if (!pos || !currentSlide) return;
+
+    // Handle connector creation cancellation on empty click
+    if (connectorCreation.isActive && e.target === stage) {
+      dispatch({ type: 'CANCEL_CONNECTOR_CREATION' });
+      return;
+    }
 
     const clickedOnEmpty = e.target === stage;
     
@@ -222,6 +316,12 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
   // Handle mouse move
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Handle connector creation mouse move
+    if (connectorCreation.isActive) {
+      handleConnectorMouseMove(e);
+      return;
+    }
+
     if (!isDrawing || !drawingStart) return;
 
     const stage = e.target.getStage();
@@ -262,10 +362,16 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         });
       }
     }
-  }, [isDrawing, drawingStart, tempElement, currentTool]);
+  }, [isDrawing, drawingStart, tempElement, currentTool, connectorCreation, handleConnectorMouseMove]);
 
   // Handle mouse up
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Handle connector creation mouse up
+    if (connectorCreation.isActive) {
+      handleConnectorMouseUp(e);
+      return;
+    }
+
     if (!isDrawing || !currentSlide) return;
 
     // Handle selection rectangle
@@ -345,6 +451,29 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const handleElementClick = useCallback((elementId: string, e: Konva.KonvaEventObject<MouseEvent>) => {
     e.cancelBubble = true;
     
+    // Handle connector creation mode - start connector from clicked element
+    if (currentTool.id === 'connector' && !connectorCreation.isActive) {
+      const element = currentSlide?.elements.find(el => el.id === elementId);
+      if (element && (element.type === 'shape' || element.type === 'text' || element.type === 'group')) {
+        const stage = e.target.getStage();
+        const pos = stage?.getPointerPosition();
+        if (pos) {
+          // Get the best connection point closest to where the user clicked
+          const bestPoint = getBestConnectionPoint(element, pos);
+          
+          dispatch({
+            type: 'START_CONNECTOR_CREATION',
+            payload: {
+              elementId: elementId,
+              connectionPoint: bestPoint.connectionPoint,
+              position: bestPoint.position
+            }
+          });
+          return;
+        }
+      }
+    }
+    
     const multiSelect = e.evt.ctrlKey || e.evt.metaKey;
     
     if (multiSelect) {
@@ -355,7 +484,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     } else {
       dispatch({ type: 'SELECT_ELEMENTS', payload: [elementId] });
     }
-  }, [selectedElements, dispatch]);
+  }, [selectedElements, dispatch, currentTool, connectorCreation, currentSlide]);
 
   // Handle element drag move (real-time updates with performance optimization)
   const handleDragMove = useCallback((elementId: string, e: Konva.KonvaEventObject<DragEvent>) => {
@@ -854,11 +983,18 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   // Handle keyboard shortcuts
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cancel connection with Escape
-      if (e.key === 'Escape' && connectionState.isConnecting) {
-        e.preventDefault();
-        setConnectionState({ isConnecting: false });
-        return;
+      // Cancel connection with Escape (legacy and new system)
+      if (e.key === 'Escape') {
+        if (connectionState.isConnecting) {
+          e.preventDefault();
+          setConnectionState({ isConnecting: false });
+          return;
+        }
+        if (connectorCreation.isActive) {
+          e.preventDefault();
+          dispatch({ type: 'CANCEL_CONNECTOR_CREATION' });
+          return;
+        }
       }
       
       // Undo: Ctrl+Z
@@ -1028,7 +1164,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentSlide, selectedElements, dispatch, connectionState, state.drawingState.clipboard]);
+  }, [currentSlide, selectedElements, dispatch, connectionState, connectorCreation, state.drawingState.clipboard]);
 
   // Update transformer
   React.useEffect(() => {
@@ -1159,7 +1295,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         onMouseUp={handleMouseUp}
         style={{
           backgroundColor: currentSlide.backgroundColor || currentSlide.background || '#ffffff',
-          cursor: currentTool.type === 'select' ? 'default' : 'crosshair',
+          cursor: connectorCreation.isActive 
+            ? (connectorCreation.targetElementId ? 'pointer' : 'crosshair')
+            : (currentTool.type === 'select' ? 'default' : 'crosshair'),
           display: 'block'
         }}
       >
@@ -1197,7 +1335,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             />
           )}
           
-          {/* Show temporary connection line while connecting */}
+          {/* Show temporary connection line while connecting (legacy) */}
           {connectionState.isConnecting && connectionState.startPosition && (
             <Line
               points={[
@@ -1213,13 +1351,74 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             />
           )}
           
+          {/* Show dynamic connector preview line */}
+          {connectorCreation.isActive && connectorCreation.startPosition && connectorCreation.currentPosition && currentSlide && (
+            <Line
+              points={(() => {
+                if (!connectorCreation.startElementId || !connectorCreation.startConnectionPoint) {
+                  return [
+                    connectorCreation.startPosition.x,
+                    connectorCreation.startPosition.y,
+                    connectorCreation.currentPosition.x,
+                    connectorCreation.currentPosition.y
+                  ];
+                }
+                
+                const startElement = currentSlide.elements.find(el => el.id === connectorCreation.startElementId);
+                if (!startElement) {
+                  return [
+                    connectorCreation.startPosition.x,
+                    connectorCreation.startPosition.y,
+                    connectorCreation.currentPosition.x,
+                    connectorCreation.currentPosition.y
+                  ];
+                }
+                
+                const targetElement = connectorCreation.targetElementId 
+                  ? currentSlide.elements.find(el => el.id === connectorCreation.targetElementId)
+                  : undefined;
+                
+                if (targetElement) {
+                  // Show optimized path to target element
+                  const result = calculateShortestPath(startElement, targetElement, currentSlide.elements);
+                  
+                  // Convert SVG path to points array for Konva Line
+                  // For now, just show start and end points with simple elbow
+                  const startPos = result.startPoint;
+                  const endPos = result.endPoint;
+                  const midX = (startPos.x + endPos.x) / 2;
+                  const midY = (startPos.y + endPos.y) / 2;
+                  
+                  return [
+                    startPos.x, startPos.y,
+                    midX, startPos.y,
+                    midX, endPos.y,
+                    endPos.x, endPos.y
+                  ];
+                } else {
+                  // Show simple line to mouse cursor
+                  return [
+                    connectorCreation.startPosition.x,
+                    connectorCreation.startPosition.y,
+                    connectorCreation.currentPosition.x,
+                    connectorCreation.currentPosition.y
+                  ];
+                }
+              })()}
+              stroke={connectorCreation.targetElementId ? "#4285f4" : "#0066FF"}
+              strokeWidth={2}
+              dash={[5, 5]}
+              listening={false}
+            />
+          )}
+          
           {/* Transformer for selected elements */}
           <Transformer ref={transformerRef} />
         </Layer>
         
         {/* Connection points layer - rendered on top */}
         <Layer listening={true}>
-          {currentTool.id === 'connector' && currentSlide.elements.map(element => {
+          {(currentTool.id === 'connector' || connectorCreation.isActive) && currentSlide.elements.map(element => {
             if (element.type === 'shape' || element.type === 'text' || element.type === 'group') {
               return (
                 <ConnectionPoints
@@ -1232,12 +1431,65 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                       connectionPoint,
                       position,
                       isConnecting: connectionState.isConnecting,
-                      startElementId: connectionState.startElementId
+                      startElementId: connectionState.startElementId,
+                      connectorCreationActive: connectorCreation.isActive
                     });
                     
-                    if (!connectionState.isConnecting) {
+                    // Use new dynamic connector creation system if available
+                    if (!connectorCreation.isActive && !connectionState.isConnecting) {
+                      // Start new dynamic connector creation
+                      dispatch({
+                        type: 'START_CONNECTOR_CREATION',
+                        payload: {
+                          elementId: elementId,
+                          connectionPoint: connectionPoint,
+                          position: position
+                        }
+                      });
+                    } else if (connectorCreation.isActive && connectorCreation.startElementId !== elementId) {
+                      // Complete dynamic connector creation
+                      const startElement = currentSlide?.elements.find(el => el.id === connectorCreation.startElementId);
+                      const targetElement = currentSlide?.elements.find(el => el.id === elementId);
+                      
+                      if (startElement && targetElement && currentSlide) {
+                        const result = calculateShortestPath(startElement, targetElement, currentSlide.elements);
+                        
+                        const connectorElement = {
+                          id: uuidv4(),
+                          type: 'line' as const,
+                          isConnector: true,
+                          connectorType: state.connectorType || 'elbow',
+                          startPoint: result.startPoint,
+                          endPoint: result.endPoint,
+                          startElementId: result.startElementId,
+                          endElementId: result.endElementId,
+                          startConnectionPoint: result.startConnectionPoint,
+                          endConnectionPoint: result.endConnectionPoint,
+                          stroke: '#333333',
+                          strokeWidth: 2,
+                          strokeStyle: 'solid' as const,
+                          arrowEnd: true,
+                          x: 0,
+                          y: 0,
+                          rotation: 0,
+                          pathData: result.path
+                        };
+                        
+                        dispatch({
+                          type: 'ADD_ELEMENT',
+                          payload: {
+                            slideId: currentSlide.id,
+                            element: connectorElement as any
+                          }
+                        });
+                      }
+                      
+                      dispatch({ type: 'CANCEL_CONNECTOR_CREATION' });
+                    }
+                    // Legacy connection system fallback
+                    else if (!connectionState.isConnecting) {
                       // Start connection
-                      console.log('Starting connection...');
+                      console.log('Starting legacy connection...');
                       setConnectionState({
                         isConnecting: true,
                         startElementId: elementId,
@@ -1245,8 +1497,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                         startPosition: position
                       });
                     } else {
-                      // Complete connection - prevent self-connection
-                      console.log('Completing connection...');
+                      // Complete legacy connection - prevent self-connection
+                      console.log('Completing legacy connection...');
                       if (currentSlide && connectionState.startElementId && connectionState.startPosition && connectionState.startElementId !== elementId) {
                         const connectorElement = {
                           id: uuidv4(),
@@ -1268,7 +1520,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                           rotation: 0
                         };
                         
-                        console.log('Adding connector element:', connectorElement);
+                        console.log('Adding legacy connector element:', connectorElement);
                         dispatch({
                           type: 'ADD_ELEMENT',
                           payload: {

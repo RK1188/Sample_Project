@@ -344,6 +344,18 @@ export interface Tool {
   shapeType?: string; // Optional shape type for shape tools
 }
 
+export interface ConnectorCreationState {
+  isActive: boolean;
+  startElementId?: string;
+  startConnectionPoint?: string;
+  startPosition?: Point;
+  currentPosition?: Point;
+  targetElementId?: string;
+  targetConnectionPoint?: string;
+  previewPath?: string;
+  isDragging: boolean;
+}
+
 export interface DrawingState {
   isDrawing: boolean;
   currentTool: Tool;
@@ -353,6 +365,7 @@ export interface DrawingState {
   clipboard: SlideElementType[];
   history: HistoryState[];
   historyIndex: number;
+  connectorCreation: ConnectorCreationState;
 }
 
 export interface HistoryState {

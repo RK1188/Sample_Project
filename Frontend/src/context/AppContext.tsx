@@ -7,7 +7,8 @@ import {
   Tool, 
   SlideElementType, 
   Slide,
-  HistoryState 
+  HistoryState,
+  ConnectorCreationState
 } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { calculateGroupBounds } from '../utils/groupUtils';
@@ -39,6 +40,10 @@ export type AppAction =
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'SET_ERROR'; payload: string | null }
   | { type: 'SET_CONNECTOR_TYPE'; payload: 'straight' | 'elbow' | 'curved' }
+  | { type: 'START_CONNECTOR_CREATION'; payload: { elementId: string; connectionPoint: string; position: { x: number; y: number } } }
+  | { type: 'UPDATE_CONNECTOR_CREATION'; payload: { mousePosition: { x: number; y: number }; targetElement?: SlideElementType; targetConnectionPoint?: string } }
+  | { type: 'COMPLETE_CONNECTOR_CREATION'; payload: { targetElementId: string; allElements: SlideElementType[] } }
+  | { type: 'CANCEL_CONNECTOR_CREATION' }
   | { type: 'TOGGLE_THEME' }
   | { type: 'RESET_APP' };
 
@@ -82,7 +87,11 @@ const initialDrawingState: DrawingState = {
   selectedElements: [],
   clipboard: [],
   history: [],
-  historyIndex: -1
+  historyIndex: -1,
+  connectorCreation: {
+    isActive: false,
+    isDragging: false
+  }
 };
 
 const initialViewportState: ViewportState = {
@@ -747,6 +756,82 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
       return {
         ...state,
         connectorType: action.payload
+      };
+
+    case 'START_CONNECTOR_CREATION':
+      return {
+        ...state,
+        drawingState: {
+          ...state.drawingState,
+          connectorCreation: {
+            isActive: true,
+            startElementId: action.payload.elementId,
+            startConnectionPoint: action.payload.connectionPoint,
+            startPosition: action.payload.position,
+            currentPosition: action.payload.position,
+            isDragging: false
+          }
+        }
+      };
+
+    case 'UPDATE_CONNECTOR_CREATION':
+      return {
+        ...state,
+        drawingState: {
+          ...state.drawingState,
+          connectorCreation: {
+            ...state.drawingState.connectorCreation,
+            currentPosition: action.payload.mousePosition,
+            targetElementId: action.payload.targetElement?.id,
+            targetConnectionPoint: action.payload.targetConnectionPoint,
+            isDragging: true
+          }
+        }
+      };
+
+    case 'COMPLETE_CONNECTOR_CREATION': {
+      const connectorState = state.drawingState.connectorCreation;
+      if (!connectorState.isActive || !connectorState.startElementId || !connectorState.startPosition) {
+        return {
+          ...state,
+          drawingState: {
+            ...state.drawingState,
+            connectorCreation: { isActive: false, isDragging: false }
+          }
+        };
+      }
+
+      const startElement = action.payload.allElements.find(el => el.id === connectorState.startElementId);
+      const targetElement = action.payload.allElements.find(el => el.id === action.payload.targetElementId);
+      
+      if (!startElement || !targetElement) {
+        return {
+          ...state,
+          drawingState: {
+            ...state.drawingState,
+            connectorCreation: { isActive: false, isDragging: false }
+          }
+        };
+      }
+
+      // This will be handled by the canvas component to create the actual connector
+      // Reset the connector creation state
+      return {
+        ...state,
+        drawingState: {
+          ...state.drawingState,
+          connectorCreation: { isActive: false, isDragging: false }
+        }
+      };
+    }
+
+    case 'CANCEL_CONNECTOR_CREATION':
+      return {
+        ...state,
+        drawingState: {
+          ...state.drawingState,
+          connectorCreation: { isActive: false, isDragging: false }
+        }
       };
 
     case 'TOGGLE_THEME':
