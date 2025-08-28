@@ -61,7 +61,7 @@ export interface WordArtStyle {
 
 export interface SlideElement {
   id: string;
-  type: 'text' | 'shape' | 'image' | 'line' | 'wordart' | 'group' | 'table' | 'chart';
+  type: 'text' | 'shape' | 'image' | 'video' | 'line' | 'wordart' | 'group' | 'table' | 'chart';
   x?: number;
   y?: number;
   width?: number;
@@ -189,6 +189,18 @@ export interface ImageElement extends SlideElement {
   alt?: string;
 }
 
+export interface VideoElement extends SlideElement {
+  type: 'video';
+  src: string;
+  poster?: string;
+  autoplay?: boolean;
+  loop?: boolean;
+  muted?: boolean;
+  controls?: boolean;
+  preload?: 'none' | 'metadata' | 'auto';
+  duration?: number;
+}
+
 export interface LineElement extends SlideElement {
   type: 'line';
   startPoint: Point;
@@ -204,6 +216,13 @@ export interface LineElement extends SlideElement {
   endConnectionPoint?: 'top' | 'bottom' | 'left' | 'right' | 'center';
   arrowStart?: boolean;
   arrowEnd?: boolean;
+  // Elbow connector adjustment points
+  elbowPoints?: Point[];  // Intermediate bend points for elbow connectors
+  adjustmentHandles?: {
+    point: Point;
+    type: 'horizontal' | 'vertical';
+    segmentIndex: number;  // Which segment this handle controls
+  }[];
 }
 
 export interface WordArtElement extends SlideElement {
@@ -281,7 +300,7 @@ export interface ChartElement extends SlideElement {
   };
 }
 
-export type SlideElementType = TextElement | ShapeElement | ImageElement | LineElement | WordArtElement | TableElement | ChartElement | SlideElement;
+export type SlideElementType = TextElement | ShapeElement | ImageElement | VideoElement | LineElement | WordArtElement | TableElement | ChartElement | SlideElement;
 
 export interface Slide {
   id: string;

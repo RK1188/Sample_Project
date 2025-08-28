@@ -1,4 +1,5 @@
 import { SlideElement, Point } from '../types';
+import { calculateConnectionSites, findNearestConnectionSite } from './presetShapeDefinitions';
 
 /**
  * Calculate the actual bounds of a group element based on its children
@@ -81,7 +82,8 @@ export function calculateGroupBounds(element: SlideElement): {
 }
 
 /**
- * Get the connection point for an element, handling groups correctly
+ * Get the connection point for an element using PowerPoint connection sites when available
+ * Falls back to basic edge points for non-shape elements
  */
 export function getElementConnectionPoint(element: SlideElement, connectionPoint: string): Point {
   const bounds = element.type === 'group' 
@@ -93,6 +95,31 @@ export function getElementConnectionPoint(element: SlideElement, connectionPoint
         height: element.height || 100
       };
 
+  // For shape elements, use PowerPoint connection sites
+  if (element.type === 'shape') {
+    const shapeElement = element as any;
+    const shapeType = shapeElement.shapeType || 'rectangle';
+    
+    try {
+      const connectionSites = calculateConnectionSites(
+        shapeType,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height
+      );
+
+      // Find the specific connection site by connection point
+      const siteIndex = getConnectionSiteIndex(connectionPoint);
+      if (connectionSites[siteIndex]) {
+        return connectionSites[siteIndex].point;
+      }
+    } catch (error) {
+      console.warn('Failed to calculate PowerPoint connection sites, using fallback:', error);
+    }
+  }
+
+  // Fallback to basic edge points
   switch (connectionPoint) {
     case 'top':
       return { x: bounds.x + bounds.width / 2, y: bounds.y };
@@ -106,6 +133,21 @@ export function getElementConnectionPoint(element: SlideElement, connectionPoint
     default:
       return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
   }
+}
+
+/**
+ * Map connection point names to PowerPoint connection site indices
+ */
+function getConnectionSiteIndex(connectionPoint: string): number {
+  const indexMap: { [key: string]: number } = {
+    'top': 0,
+    'right': 1,
+    'bottom': 2,
+    'left': 3,
+    'center': 0 // Default to top if center is requested
+  };
+  
+  return indexMap[connectionPoint] || 0;
 }
 
 /**

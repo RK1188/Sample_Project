@@ -2,9 +2,626 @@ import React, { useMemo } from 'react';
 import { Line, Circle, Group, Path } from 'react-konva';
 import Konva from 'konva';
 import { SlideElement, Point } from '../types';
-import { getElementConnectionPoint } from '../utils/groupUtils';
+import { getElementConnectionPoint, calculateGroupBounds } from '../utils/groupUtils';
+import { routePowerPointElbowConnector } from '../utils/powerPointConnectorRouting';
 
 export type ConnectorType = 'straight' | 'elbow' | 'curved';
+
+// Shape boundary utilities
+interface ShapeBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Check if a line segment intersects with a shape boundary or comes too close
+ */
+function lineIntersectsShape(
+  lineStart: Point,
+  lineEnd: Point,
+  element: SlideElement,
+  clearance: number = 15
+): boolean {
+  const bounds: ShapeBounds = element.type === 'group' 
+    ? calculateGroupBounds(element)
+    : {
+        x: element.x || 0,
+        y: element.y || 0,
+        width: element.width || 100,
+        height: element.height || 100
+      };
+
+  // Check if line intersects with the bounding rectangle plus clearance
+  return lineIntersectsRect(lineStart, lineEnd, bounds, clearance);
+}
+
+/**
+ * Check if a line segment intersects with a rectangle or comes too close to it
+ * Enhanced to include clearance zone around shapes
+ */
+function lineIntersectsRect(
+  lineStart: Point,
+  lineEnd: Point,
+  rect: ShapeBounds,
+  clearance: number = 15
+): boolean {
+  // Create expanded rectangle with clearance
+  const expandedRect = {
+    x: rect.x - clearance,
+    y: rect.y - clearance,
+    width: rect.width + (clearance * 2),
+    height: rect.height + (clearance * 2)
+  };
+
+  // Check if either endpoint is inside expanded rectangle
+  if (pointInRect(lineStart, expandedRect) || pointInRect(lineEnd, expandedRect)) {
+    return true;
+  }
+
+  // Check intersection with each edge of the expanded rectangle
+  const edges = [
+    { start: { x: expandedRect.x, y: expandedRect.y }, end: { x: expandedRect.x + expandedRect.width, y: expandedRect.y } }, // top
+    { start: { x: expandedRect.x + expandedRect.width, y: expandedRect.y }, end: { x: expandedRect.x + expandedRect.width, y: expandedRect.y + expandedRect.height } }, // right
+    { start: { x: expandedRect.x + expandedRect.width, y: expandedRect.y + expandedRect.height }, end: { x: expandedRect.x, y: expandedRect.y + expandedRect.height } }, // bottom
+    { start: { x: expandedRect.x, y: expandedRect.y + expandedRect.height }, end: { x: expandedRect.x, y: expandedRect.y } } // left
+  ];
+
+  return edges.some(edge => linesIntersect(lineStart, lineEnd, edge.start, edge.end));
+}
+
+/**
+ * Check if a point is inside a rectangle
+ */
+function pointInRect(point: Point, rect: ShapeBounds): boolean {
+  return point.x >= rect.x && 
+         point.x <= rect.x + rect.width && 
+         point.y >= rect.y && 
+         point.y <= rect.y + rect.height;
+}
+
+/**
+ * Check if two line segments intersect
+ */
+function linesIntersect(p1: Point, q1: Point, p2: Point, q2: Point): boolean {
+  const orientation = (p: Point, q: Point, r: Point): number => {
+    const val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+    if (val === 0) return 0; // collinear
+    return (val > 0) ? 1 : 2; // clockwise or counterclockwise
+  };
+
+  const onSegment = (p: Point, q: Point, r: Point): boolean => {
+    return q.x <= Math.max(p.x, r.x) && q.x >= Math.min(p.x, r.x) &&
+           q.y <= Math.max(p.y, r.y) && q.y >= Math.min(p.y, r.y);
+  };
+
+  const o1 = orientation(p1, q1, p2);
+  const o2 = orientation(p1, q1, q2);
+  const o3 = orientation(p2, q2, p1);
+  const o4 = orientation(p2, q2, q1);
+
+  // General case
+  if (o1 !== o2 && o3 !== o4) return true;
+
+  // Special cases
+  if (o1 === 0 && onSegment(p1, p2, q1)) return true;
+  if (o2 === 0 && onSegment(p1, q2, q1)) return true;
+  if (o3 === 0 && onSegment(p2, p1, q2)) return true;
+  if (o4 === 0 && onSegment(p2, q1, q2)) return true;
+
+  return false;
+}
+
+/**
+ * Generate boundary-aware elbow path that routes around shapes
+ */
+function generateElbowPath(
+  start: Point,
+  end: Point,
+  startConnectionPoint?: string,
+  endConnectionPoint?: string,
+  allElements: SlideElement[] = [],
+  startElementId?: string,
+  endElementId?: string,
+  connectorId?: string
+): string {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  
+  // Get potential obstacles (shapes that could be in the way)
+  const obstacles = allElements.filter(element => 
+    element.id !== startElementId && 
+    element.id !== endElementId && 
+    element.id !== connectorId &&
+    element.type !== 'line' &&
+    element.type !== 'text' // Exclude text elements as they're typically small
+  );
+
+  // Try different routing strategies
+  const routingStrategies = generateRoutingStrategies(start, end, startConnectionPoint, endConnectionPoint);
+  
+  // Test each strategy and pick the first one that doesn't intersect obstacles
+  for (const strategy of routingStrategies) {
+    const segments = strategy.segments;
+    let hasIntersection = false;
+    
+    // Check each segment against all obstacles with clearance
+    for (const segment of segments) {
+      for (const obstacle of obstacles) {
+        if (lineIntersectsShape(segment.start, segment.end, obstacle, 20)) {
+          hasIntersection = true;
+          break;
+        }
+      }
+      if (hasIntersection) break;
+    }
+    
+    // If no intersection found, use this strategy
+    if (!hasIntersection) {
+      return strategy.path;
+    }
+  }
+  
+  // If all strategies have intersections, use the extended routing
+  return generateExtendedRouting(start, end, startConnectionPoint, endConnectionPoint, obstacles);
+}
+
+/**
+ * Generate different routing strategies in order of preference
+ * Enhanced to include clearance-aware routing options
+ */
+function generateRoutingStrategies(
+  start: Point,
+  end: Point,
+  startConnectionPoint?: string,
+  endConnectionPoint?: string
+): Array<{ path: string; segments: Array<{ start: Point; end: Point }> }> {
+  const strategies = [];
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const minOffset = 30; // Minimum offset from connection points
+
+  if (startConnectionPoint && endConnectionPoint) {
+    // Smart routing based on connection points with proper offsets
+    if (startConnectionPoint === 'right' && endConnectionPoint === 'left') {
+      // Horizontal first, then vertical - with minimum offset
+      const midX = Math.max(start.x + minOffset, start.x + dx / 2);
+      const waypoint1 = { x: midX, y: start.y };
+      const waypoint2 = { x: midX, y: end.y };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint1 },
+          { start: waypoint1, end: waypoint2 },
+          { start: waypoint2, end }
+        ]
+      });
+    } else if (startConnectionPoint === 'left' && endConnectionPoint === 'right') {
+      // Horizontal first, then vertical - with minimum offset
+      const midX = Math.min(start.x - minOffset, start.x + dx / 2);
+      const waypoint1 = { x: midX, y: start.y };
+      const waypoint2 = { x: midX, y: end.y };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint1 },
+          { start: waypoint1, end: waypoint2 },
+          { start: waypoint2, end }
+        ]
+      });
+    } else if (startConnectionPoint === 'bottom' && endConnectionPoint === 'top') {
+      // Vertical first, then horizontal - with minimum offset
+      const midY = Math.max(start.y + minOffset, start.y + dy / 2);
+      const waypoint1 = { x: start.x, y: midY };
+      const waypoint2 = { x: end.x, y: midY };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint1 },
+          { start: waypoint1, end: waypoint2 },
+          { start: waypoint2, end }
+        ]
+      });
+    } else if (startConnectionPoint === 'top' && endConnectionPoint === 'bottom') {
+      // Vertical first, then horizontal - with minimum offset
+      const midY = Math.min(start.y - minOffset, start.y + dy / 2);
+      const waypoint1 = { x: start.x, y: midY };
+      const waypoint2 = { x: end.x, y: midY };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint1 },
+          { start: waypoint1, end: waypoint2 },
+          { start: waypoint2, end }
+        ]
+      });
+    }
+    
+    // Add clearance-aware L-shaped routing for all connection point combinations
+    // Try routing with proper offsets based on connection directions
+    if (startConnectionPoint === 'right') {
+      const offset = Math.max(minOffset, Math.abs(dx) * 0.3);
+      const waypoint1 = { x: start.x + offset, y: start.y };
+      const waypoint2 = { x: start.x + offset, y: end.y };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint1 },
+          { start: waypoint1, end: waypoint2 },
+          { start: waypoint2, end }
+        ]
+      });
+    } else if (startConnectionPoint === 'left') {
+      const offset = Math.max(minOffset, Math.abs(dx) * 0.3);
+      const waypoint1 = { x: start.x - offset, y: start.y };
+      const waypoint2 = { x: start.x - offset, y: end.y };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint1 },
+          { start: waypoint1, end: waypoint2 },
+          { start: waypoint2, end }
+        ]
+      });
+    } else if (startConnectionPoint === 'top') {
+      const offset = Math.max(minOffset, Math.abs(dy) * 0.3);
+      const waypoint1 = { x: start.x, y: start.y - offset };
+      const waypoint2 = { x: end.x, y: start.y - offset };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint1 },
+          { start: waypoint1, end: waypoint2 },
+          { start: waypoint2, end }
+        ]
+      });
+    } else if (startConnectionPoint === 'bottom') {
+      const offset = Math.max(minOffset, Math.abs(dy) * 0.3);
+      const waypoint1 = { x: start.x, y: start.y + offset };
+      const waypoint2 = { x: end.x, y: start.y + offset };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint1 },
+          { start: waypoint1, end: waypoint2 },
+          { start: waypoint2, end }
+        ]
+      });
+    }
+    
+    // Alternative L-shapes as fallback
+    const waypoint = { x: end.x, y: start.y };
+    strategies.push({
+      path: `M ${start.x} ${start.y} L ${waypoint.x} ${waypoint.y} L ${end.x} ${end.y}`,
+      segments: [
+        { start, end: waypoint },
+        { start: waypoint, end }
+      ]
+    });
+    
+    const altWaypoint = { x: start.x, y: end.y };
+    strategies.push({
+      path: `M ${start.x} ${start.y} L ${altWaypoint.x} ${altWaypoint.y} L ${end.x} ${end.y}`,
+      segments: [
+        { start, end: altWaypoint },
+        { start: altWaypoint, end }
+      ]
+    });
+  } else {
+    // Default strategies without connection points - use larger offsets
+    if (Math.abs(dx) > Math.abs(dy)) {
+      // Horizontal dominant - try horizontal first with offset
+      const waypoint = { x: end.x, y: start.y };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint.x} ${waypoint.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint },
+          { start: waypoint, end }
+        ]
+      });
+      
+      // Alternative with vertical first
+      const altWaypoint = { x: start.x, y: end.y };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${altWaypoint.x} ${altWaypoint.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: altWaypoint },
+          { start: altWaypoint, end }
+        ]
+      });
+    } else {
+      // Vertical dominant - try vertical first
+      const waypoint = { x: start.x, y: end.y };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${waypoint.x} ${waypoint.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: waypoint },
+          { start: waypoint, end }
+        ]
+      });
+      
+      // Alternative with horizontal first
+      const altWaypoint = { x: end.x, y: start.y };
+      strategies.push({
+        path: `M ${start.x} ${start.y} L ${altWaypoint.x} ${altWaypoint.y} L ${end.x} ${end.y}`,
+        segments: [
+          { start, end: altWaypoint },
+          { start: altWaypoint, end }
+        ]
+      });
+    }
+  }
+
+  return strategies;
+}
+
+/**
+ * Generate extended routing that goes around obstacles with proper clearance
+ */
+function generateExtendedRouting(
+  start: Point,
+  end: Point,
+  startConnectionPoint?: string,
+  endConnectionPoint?: string,
+  obstacles: SlideElement[] = []
+): string {
+  // Find the optimal routing path that clears all obstacles
+  const clearancePath = findClearancePath(start, end, startConnectionPoint, endConnectionPoint, obstacles);
+  
+  if (clearancePath) {
+    return clearancePath;
+  }
+  
+  // Fallback to large offset routing if clearance path fails
+  const largeOffset = 60;
+  let waypoint1: Point, waypoint2: Point;
+  
+  if (startConnectionPoint === 'right') {
+    waypoint1 = { x: start.x + largeOffset, y: start.y };
+    waypoint2 = { x: start.x + largeOffset, y: end.y };
+  } else if (startConnectionPoint === 'left') {
+    waypoint1 = { x: start.x - largeOffset, y: start.y };
+    waypoint2 = { x: start.x - largeOffset, y: end.y };
+  } else if (startConnectionPoint === 'bottom') {
+    waypoint1 = { x: start.x, y: start.y + largeOffset };
+    waypoint2 = { x: end.x, y: start.y + largeOffset };
+  } else if (startConnectionPoint === 'top') {
+    waypoint1 = { x: start.x, y: start.y - largeOffset };
+    waypoint2 = { x: end.x, y: start.y - largeOffset };
+  } else {
+    // Default large offset routing
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    
+    if (Math.abs(dx) > Math.abs(dy)) {
+      waypoint1 = { x: start.x + (dx > 0 ? largeOffset : -largeOffset), y: start.y };
+      waypoint2 = { x: start.x + (dx > 0 ? largeOffset : -largeOffset), y: end.y };
+    } else {
+      waypoint1 = { x: start.x, y: start.y + (dy > 0 ? largeOffset : -largeOffset) };
+      waypoint2 = { x: end.x, y: start.y + (dy > 0 ? largeOffset : -largeOffset) };
+    }
+  }
+  
+  return `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`;
+}
+
+/**
+ * Find a clearance path that routes around all obstacles
+ */
+function findClearancePath(
+  start: Point,
+  end: Point,
+  startConnectionPoint?: string,
+  endConnectionPoint?: string,
+  obstacles: SlideElement[] = []
+): string | null {
+  const clearance = 25;
+  
+  // Get all obstacle bounds with clearance
+  const obstacleRects = obstacles.map(obstacle => {
+    const bounds: ShapeBounds = obstacle.type === 'group' 
+      ? calculateGroupBounds(obstacle)
+      : {
+          x: obstacle.x || 0,
+          y: obstacle.y || 0,
+          width: obstacle.width || 100,
+          height: obstacle.height || 100
+        };
+    
+    return {
+      x: bounds.x - clearance,
+      y: bounds.y - clearance,
+      width: bounds.width + (clearance * 2),
+      height: bounds.height + (clearance * 2)
+    };
+  });
+  
+  // Try different routing approaches
+  const routingApproaches = [
+    // Try routing above obstacles
+    () => routeAroundObstacles(start, end, obstacleRects, 'above', startConnectionPoint, endConnectionPoint),
+    // Try routing below obstacles  
+    () => routeAroundObstacles(start, end, obstacleRects, 'below', startConnectionPoint, endConnectionPoint),
+    // Try routing to the left
+    () => routeAroundObstacles(start, end, obstacleRects, 'left', startConnectionPoint, endConnectionPoint),
+    // Try routing to the right
+    () => routeAroundObstacles(start, end, obstacleRects, 'right', startConnectionPoint, endConnectionPoint)
+  ];
+  
+  // Test each approach and return the first successful one
+  for (const approach of routingApproaches) {
+    const result = approach();
+    if (result && !pathIntersectsObstacles(result.segments, obstacles, clearance)) {
+      return result.path;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Route around obstacles in a specific direction
+ */
+function routeAroundObstacles(
+  start: Point,
+  end: Point,
+  obstacles: ShapeBounds[],
+  direction: 'above' | 'below' | 'left' | 'right',
+  startConnectionPoint?: string,
+  endConnectionPoint?: string
+): { path: string; segments: Array<{ start: Point; end: Point }> } | null {
+  if (obstacles.length === 0) {
+    return null;
+  }
+  
+  // Calculate bounds of all obstacles
+  const minX = Math.min(...obstacles.map(r => r.x));
+  const maxX = Math.max(...obstacles.map(r => r.x + r.width));
+  const minY = Math.min(...obstacles.map(r => r.y));
+  const maxY = Math.max(...obstacles.map(r => r.y + r.height));
+  
+  let waypoint1: Point, waypoint2: Point;
+  
+  switch (direction) {
+    case 'above':
+      if (startConnectionPoint === 'top' || startConnectionPoint === 'bottom') {
+        waypoint1 = { x: start.x, y: minY - 20 };
+        waypoint2 = { x: end.x, y: minY - 20 };
+      } else {
+        waypoint1 = { x: start.x, y: minY - 20 };
+        waypoint2 = { x: end.x, y: minY - 20 };
+      }
+      break;
+      
+    case 'below':
+      if (startConnectionPoint === 'top' || startConnectionPoint === 'bottom') {
+        waypoint1 = { x: start.x, y: maxY + 20 };
+        waypoint2 = { x: end.x, y: maxY + 20 };
+      } else {
+        waypoint1 = { x: start.x, y: maxY + 20 };
+        waypoint2 = { x: end.x, y: maxY + 20 };
+      }
+      break;
+      
+    case 'left':
+      if (startConnectionPoint === 'left' || startConnectionPoint === 'right') {
+        waypoint1 = { x: minX - 20, y: start.y };
+        waypoint2 = { x: minX - 20, y: end.y };
+      } else {
+        waypoint1 = { x: minX - 20, y: start.y };
+        waypoint2 = { x: minX - 20, y: end.y };
+      }
+      break;
+      
+    case 'right':
+      if (startConnectionPoint === 'left' || startConnectionPoint === 'right') {
+        waypoint1 = { x: maxX + 20, y: start.y };
+        waypoint2 = { x: maxX + 20, y: end.y };
+      } else {
+        waypoint1 = { x: maxX + 20, y: start.y };
+        waypoint2 = { x: maxX + 20, y: end.y };
+      }
+      break;
+      
+    default:
+      return null;
+  }
+  
+  const segments = [
+    { start, end: waypoint1 },
+    { start: waypoint1, end: waypoint2 },
+    { start: waypoint2, end }
+  ];
+  
+  const path = `M ${start.x} ${start.y} L ${waypoint1.x} ${waypoint1.y} L ${waypoint2.x} ${waypoint2.y} L ${end.x} ${end.y}`;
+  
+  return { path, segments };
+}
+
+/**
+ * Check if a path intersects with obstacles
+ */
+function pathIntersectsObstacles(
+  segments: Array<{ start: Point; end: Point }>,
+  obstacles: SlideElement[],
+  clearance: number = 15
+): boolean {
+  for (const segment of segments) {
+    for (const obstacle of obstacles) {
+      if (lineIntersectsShape(segment.start, segment.end, obstacle, clearance)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Calculate the minimum routing distance needed to clear obstacles
+ */
+function calculateRoutingDistance(start: Point, end: Point, obstacles: SlideElement[]): number {
+  let maxDistance = 30; // Minimum routing distance
+  
+  obstacles.forEach(obstacle => {
+    const bounds: ShapeBounds = obstacle.type === 'group' 
+      ? calculateGroupBounds(obstacle)
+      : {
+          x: obstacle.x || 0,
+          y: obstacle.y || 0,
+          width: obstacle.width || 100,
+          height: obstacle.height || 100
+        };
+    
+    // Calculate clearance needed for this obstacle
+    const clearanceX = Math.max(0, bounds.width / 2 + 20);
+    const clearanceY = Math.max(0, bounds.height / 2 + 20);
+    const neededDistance = Math.max(clearanceX, clearanceY);
+    
+    maxDistance = Math.max(maxDistance, neededDistance);
+  });
+  
+  return Math.min(maxDistance, 100); // Cap at reasonable maximum
+}
+
+/**
+ * Generate PowerPoint-compliant elbow path using preset shape definitions
+ */
+function generatePowerPointElbowPath(
+  start: Point,
+  end: Point,
+  startConnectionPoint?: string,
+  endConnectionPoint?: string,
+  allElements: SlideElement[] = [],
+  startElementId?: string,
+  endElementId?: string,
+  connectorId?: string
+): string {
+  // Find the connected elements
+  const startElement = startElementId ? allElements.find(el => el.id === startElementId) : null;
+  const endElement = endElementId ? allElements.find(el => el.id === endElementId) : null;
+
+  // If both elements are available, use PowerPoint routing
+  if (startElement && endElement) {
+    try {
+      const routing = routePowerPointElbowConnector(
+        startElement,
+        endElement,
+        startConnectionPoint,
+        endConnectionPoint,
+        allElements,
+        connectorId
+      );
+      
+      return routing.path;
+    } catch (error) {
+      console.warn('PowerPoint routing failed, falling back to standard routing:', error);
+    }
+  }
+
+  // Fallback to the existing elbow routing
+  return generateElbowPath(start, end, startConnectionPoint, endConnectionPoint, allElements, startElementId, endElementId, connectorId);
+}
 
 interface EnhancedConnectorLineProps {
   id: string;
@@ -79,101 +696,7 @@ const EnhancedConnectorLine: React.FC<EnhancedConnectorLineProps> = ({
         return null; // Will use Line component instead
         
       case 'elbow':
-        // Right-angle connector (L-shaped or Z-shaped)
-        const dx = end.x - start.x;
-        const dy = end.y - start.y;
-        
-        // Determine the routing based on connection points
-        let path = `M ${start.x} ${start.y}`;
-        
-        if (startConnectionPoint && endConnectionPoint) {
-          // Smart routing based on connection points
-          if (startConnectionPoint === 'right' && endConnectionPoint === 'left') {
-            // Horizontal first, then vertical
-            const midX = start.x + dx / 2;
-            path += ` L ${midX} ${start.y}`;
-            path += ` L ${midX} ${end.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'left' && endConnectionPoint === 'right') {
-            // Horizontal first, then vertical
-            const midX = start.x + dx / 2;
-            path += ` L ${midX} ${start.y}`;
-            path += ` L ${midX} ${end.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'bottom' && endConnectionPoint === 'top') {
-            // Vertical first, then horizontal
-            const midY = start.y + dy / 2;
-            path += ` L ${start.x} ${midY}`;
-            path += ` L ${end.x} ${midY}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'top' && endConnectionPoint === 'bottom') {
-            // Vertical first, then horizontal
-            const midY = start.y + dy / 2;
-            path += ` L ${start.x} ${midY}`;
-            path += ` L ${end.x} ${midY}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'right' && endConnectionPoint === 'top') {
-            // Right then up
-            path += ` L ${end.x} ${start.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'right' && endConnectionPoint === 'bottom') {
-            // Right then down
-            path += ` L ${end.x} ${start.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'left' && endConnectionPoint === 'top') {
-            // Left then up
-            path += ` L ${end.x} ${start.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'left' && endConnectionPoint === 'bottom') {
-            // Left then down
-            path += ` L ${end.x} ${start.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'top' && endConnectionPoint === 'left') {
-            // Up then left
-            path += ` L ${start.x} ${end.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'top' && endConnectionPoint === 'right') {
-            // Up then right
-            path += ` L ${start.x} ${end.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'bottom' && endConnectionPoint === 'left') {
-            // Down then left
-            path += ` L ${start.x} ${end.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else if (startConnectionPoint === 'bottom' && endConnectionPoint === 'right') {
-            // Down then right
-            path += ` L ${start.x} ${end.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else {
-            // Default: create an L-shape
-            if (Math.abs(dx) > Math.abs(dy)) {
-              // Horizontal dominant
-              path += ` L ${end.x} ${start.y}`;
-              path += ` L ${end.x} ${end.y}`;
-            } else {
-              // Vertical dominant
-              path += ` L ${start.x} ${end.y}`;
-              path += ` L ${end.x} ${end.y}`;
-            }
-          }
-        } else {
-          // Simple elbow without smart routing
-          if (Math.abs(dx) > Math.abs(dy)) {
-            // Horizontal dominant
-            const midX = start.x + dx / 2;
-            path += ` L ${midX} ${start.y}`;
-            path += ` L ${midX} ${end.y}`;
-            path += ` L ${end.x} ${end.y}`;
-          } else {
-            // Vertical dominant
-            const midY = start.y + dy / 2;
-            path += ` L ${start.x} ${midY}`;
-            path += ` L ${end.x} ${midY}`;
-            path += ` L ${end.x} ${end.y}`;
-          }
-        }
-        
-        return path;
+        return generatePowerPointElbowPath(start, end, startConnectionPoint, endConnectionPoint, allElements, startElementId, endElementId, id);
         
       case 'curved':
         // Bezier curve connector
