@@ -17,11 +17,13 @@ import AdjustmentHandles from './AdjustmentHandles';
 import { updateConnectorPositions } from '../utils/groupUtils';
 import {
   calculateShortestPath,
+  calculateNearestPointConnection,
   generatePreviewPath,
   findTargetElementUnderMouse,
   completeConnectorCreation,
   getBestConnectionPoint
 } from '../utils/dynamicConnectorCreation';
+import { routePowerPointElbowConnector } from '../utils/powerPointConnectorRouting';
 
 interface DrawingCanvasProps {
   slideId: string;
@@ -92,9 +94,14 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     let targetConnectionPoint: string | undefined;
 
     if (targetElement) {
-      // Get the best connection point on the target element
+      // Get the best connection point on the target element closest to current mouse position
       const bestPoint = getBestConnectionPoint(targetElement, pos);
       targetConnectionPoint = bestPoint.connectionPoint;
+      
+      // Debug log to see if target connection point is changing
+      console.log('Dynamic connector move - Target element:', targetElement.id, 
+                  'Connection point:', targetConnectionPoint, 
+                  'Mouse pos:', pos);
     }
 
     // Update connector creation state with current mouse position
@@ -122,7 +129,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       // Complete the connection
       const startElement = currentSlide.elements.find(el => el.id === connectorCreation.startElementId);
       if (startElement) {
-        const result = calculateShortestPath(startElement, targetElement, currentSlide.elements);
+        const result = calculateNearestPointConnection(startElement, targetElement, pos, currentSlide.elements, connectorCreation.startConnectionPoint);
         
         // Create the connector element
         const connectorElement = {
@@ -1378,12 +1385,36 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                   ? currentSlide.elements.find(el => el.id === connectorCreation.targetElementId)
                   : undefined;
                 
-                if (targetElement) {
-                  // Show optimized path to target element
-                  const result = calculateShortestPath(startElement, targetElement, currentSlide.elements);
+                if (targetElement && connectorCreation.targetConnectionPoint) {
+                  // Use the stored target connection point instead of recalculating
+                  // This ensures we show the exact connection point that was determined dynamically
+                  const result = routePowerPointElbowConnector(
+                    startElement,
+                    targetElement,
+                    connectorCreation.startConnectionPoint,
+                    connectorCreation.targetConnectionPoint,
+                    currentSlide.elements
+                  );
                   
-                  // Convert SVG path to points array for Konva Line
-                  // For now, just show start and end points with simple elbow
+                  // Debug log to see what connection points are being used in preview
+                  console.log('Preview line - Start CP:', connectorCreation.startConnectionPoint, 'Target CP:', connectorCreation.targetConnectionPoint, 'Start pos:', result.startConnectionSite.point, 'End pos:', result.endConnectionSite.point);
+                  
+                  // Convert to simple elbow points for preview
+                  const startPos = result.startConnectionSite.point;
+                  const endPos = result.endConnectionSite.point;
+                  const midX = (startPos.x + endPos.x) / 2;
+                  const midY = (startPos.y + endPos.y) / 2;
+                  
+                  return [
+                    startPos.x, startPos.y,
+                    midX, startPos.y,
+                    midX, endPos.y,
+                    endPos.x, endPos.y
+                  ];
+                } else if (targetElement) {
+                  // Fallback: if no stored target connection point, recalculate
+                  const result = calculateNearestPointConnection(startElement, targetElement, connectorCreation.currentPosition, currentSlide.elements, connectorCreation.startConnectionPoint);
+                  
                   const startPos = result.startPoint;
                   const endPos = result.endPoint;
                   const midX = (startPos.x + endPos.x) / 2;
@@ -1452,7 +1483,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                       const targetElement = currentSlide?.elements.find(el => el.id === elementId);
                       
                       if (startElement && targetElement && currentSlide) {
-                        const result = calculateShortestPath(startElement, targetElement, currentSlide.elements);
+                        // Use the connection point position as the drag position for nearest point calculation
+                        const result = calculateNearestPointConnection(startElement, targetElement, position, currentSlide.elements, connectorCreation.startConnectionPoint);
                         
                         const connectorElement = {
                           id: uuidv4(),

@@ -6,6 +6,7 @@
 import { SlideElement, Point, ConnectorCreationState } from '../types';
 import { routePowerPointElbowConnector } from './powerPointConnectorRouting';
 import { getElementConnectionPoint } from './groupUtils';
+import { calculateConnectionSites, findNearestConnectionSite } from './presetShapeDefinitions';
 
 export interface DynamicConnectorResult {
   path: string;
@@ -19,7 +20,53 @@ export interface DynamicConnectorResult {
 }
 
 /**
+ * Calculate connection using shortest overall path among all target adjustment points
+ * Keeps the start connection point unchanged, finds shortest path to any target point
+ */
+export function calculateNearestPointConnection(
+  startElement: SlideElement,
+  targetElement: SlideElement,
+  dragPosition: Point,
+  allElements: SlideElement[] = [],
+  fixedStartConnectionPoint?: string
+): DynamicConnectorResult {
+  // Use the fixed start connection point if provided
+  let startConnectionPoint: string;
+  if (fixedStartConnectionPoint) {
+    startConnectionPoint = fixedStartConnectionPoint;
+  } else {
+    // Fallback to finding best start point (for backward compatibility)
+    const startBestPoint = getBestConnectionPoint(startElement, dragPosition);
+    startConnectionPoint = startBestPoint.connectionPoint;
+  }
+
+  // Find the shortest distance from current drag position to ALL target adjustment points
+  const targetBestPoint = findShortestPathToTargetPoints(targetElement, dragPosition);
+  
+  // Use PowerPoint routing to get the actual path
+  const routing = routePowerPointElbowConnector(
+    startElement,
+    targetElement,
+    startConnectionPoint,
+    targetBestPoint.connectionPoint,
+    allElements
+  );
+  
+  return {
+    path: routing.path,
+    startPoint: routing.startConnectionSite.point,
+    endPoint: routing.endConnectionSite.point,
+    startElementId: startElement.id,
+    endElementId: targetElement.id,
+    startConnectionPoint: startConnectionPoint,
+    endConnectionPoint: targetBestPoint.connectionPoint,
+    connectorType: 'elbow'
+  };
+}
+
+/**
  * Calculate the shortest path between two shapes with automatic connection point selection
+ * This function can be used for non-drag scenarios where optimal routing is preferred
  */
 export function calculateShortestPath(
   startElement: SlideElement,
@@ -149,13 +196,14 @@ export function generatePreviewPath(
   startElement: SlideElement,
   startConnectionPoint: string,
   mousePosition: Point,
-  targetElement?: SlideElement
+  targetElement?: SlideElement,
+  allElements: SlideElement[] = []
 ): string {
   const startPos = getElementConnectionPoint(startElement, startConnectionPoint);
   
   if (targetElement) {
-    // If over a target element, show optimal connection
-    const result = calculateShortestPath(startElement, targetElement);
+    // If over a target element, show connection using nearest point to drag position
+    const result = calculateNearestPointConnection(startElement, targetElement, mousePosition, allElements);
     return result.path;
   } else {
     // Show simple line to mouse cursor
@@ -201,16 +249,145 @@ function isPointInElement(point: Point, element: SlideElement): boolean {
 }
 
 /**
+ * Find the shortest path to any target adjustment point based on current drag position
+ * Considers ALL available adjustment points on the target shape and finds nearest to drag position
+ */
+export function findShortestPathToTargetPoints(
+  targetElement: SlideElement,
+  dragPosition: Point
+): { connectionPoint: string; position: Point } {
+  // For shape elements, use PowerPoint connection sites if available
+  if (targetElement.type === 'shape') {
+    const shapeElement = targetElement as any;
+    const shapeType = shapeElement.shapeType || 'rectangle';
+    
+    try {
+      const bounds = {
+        x: targetElement.x || 0,
+        y: targetElement.y || 0,
+        width: targetElement.width || 100,
+        height: targetElement.height || 100
+      };
+
+      // Calculate ALL available connection sites for this shape
+      const connectionSites = calculateConnectionSites(
+        shapeType,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height
+      );
+
+      // Find the connection site with shortest distance from current drag position
+      let shortestDistance = Infinity;
+      let bestSite = connectionSites[0];
+      
+      connectionSites.forEach(site => {
+        const distance = Math.sqrt(
+          Math.pow(site.point.x - dragPosition.x, 2) + 
+          Math.pow(site.point.y - dragPosition.y, 2)
+        );
+        
+        if (distance < shortestDistance) {
+          shortestDistance = distance;
+          bestSite = site;
+        }
+      });
+      
+      // Map the connection site back to a connection point name using improved logic
+      const connectionPointName = mapConnectionSiteToPointName(bestSite.id, connectionSites.length, bestSite);
+      
+      return {
+        connectionPoint: connectionPointName,
+        position: bestSite.point
+      };
+    } catch (error) {
+      console.warn('Failed to calculate PowerPoint connection sites, using fallback:', error);
+      // Fall through to basic connection points
+    }
+  }
+
+  // Fallback to basic connection points for non-shapes or when PowerPoint sites fail
+  const connectionPoints = ['top', 'right', 'bottom', 'left', 'center'];
+  let bestPoint = 'top'; // Initialize to first point instead of center
+  let shortestDistance = Infinity;
+  let bestPosition = getElementConnectionPoint(targetElement, 'top');
+
+  for (const pointName of connectionPoints) {
+    const position = getElementConnectionPoint(targetElement, pointName);
+    const distance = Math.sqrt(
+      Math.pow(position.x - dragPosition.x, 2) + 
+      Math.pow(position.y - dragPosition.y, 2)
+    );
+    
+    if (distance < shortestDistance) {
+      shortestDistance = distance;
+      bestPoint = pointName;
+      bestPosition = position;
+    }
+  }
+  return { connectionPoint: bestPoint, position: bestPosition };
+}
+
+/**
  * Get the best connection point on an element closest to a given position
+ * Uses PowerPoint connection sites for shapes with multiple adjustment points
  */
 export function getBestConnectionPoint(
   element: SlideElement,
   targetPosition: Point
 ): { connectionPoint: string; position: Point } {
+  // For shape elements, use PowerPoint connection sites if available
+  if (element.type === 'shape') {
+    const shapeElement = element as any;
+    const shapeType = shapeElement.shapeType || 'rectangle';
+    
+    try {
+      const bounds = {
+        x: element.x || 0,
+        y: element.y || 0,
+        width: element.width || 100,
+        height: element.height || 100
+      };
+
+      // Calculate all available connection sites for this shape
+      const connectionSites = calculateConnectionSites(
+        shapeType,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height
+      );
+
+      // Find the nearest connection site to the drag/target position
+      const nearestSite = findNearestConnectionSite(connectionSites, targetPosition);
+      
+      // Map the connection site back to a connection point name using improved logic
+      const connectionPointName = mapConnectionSiteToPointName(nearestSite.id, connectionSites.length, nearestSite);
+      
+      // Debug log to verify dynamic selection
+      console.log(`getBestConnectionPoint for ${element.id} (${shapeType}):`, {
+        targetPos: targetPosition,
+        totalSites: connectionSites.length,
+        nearestSite: nearestSite,
+        connectionPointName
+      });
+      
+      return {
+        connectionPoint: connectionPointName,
+        position: nearestSite.point
+      };
+    } catch (error) {
+      console.warn('Failed to calculate PowerPoint connection sites, using fallback:', error);
+      // Fall through to basic connection points
+    }
+  }
+
+  // Fallback to basic connection points for non-shapes or when PowerPoint sites fail
   const connectionPoints = ['top', 'right', 'bottom', 'left', 'center'];
-  let bestPoint = 'center';
+  let bestPoint = 'top'; // Initialize to first point instead of center
   let shortestDistance = Infinity;
-  let bestPosition = getElementConnectionPoint(element, 'center');
+  let bestPosition = getElementConnectionPoint(element, 'top');
 
   for (const pointName of connectionPoints) {
     const position = getElementConnectionPoint(element, pointName);
@@ -225,9 +402,39 @@ export function getBestConnectionPoint(
       bestPosition = position;
     }
   }
-
+  
+  console.log(`getBestConnectionPoint fallback for ${element.id}:`, {
+    targetPos: targetPosition,
+    bestPoint,
+    bestPosition,
+    distances: connectionPoints.map(cp => ({
+      point: cp,
+      pos: getElementConnectionPoint(element, cp),
+      distance: Math.sqrt(Math.pow(getElementConnectionPoint(element, cp).x - targetPosition.x, 2) + Math.pow(getElementConnectionPoint(element, cp).y - targetPosition.y, 2))
+    }))
+  });
+  
   return { connectionPoint: bestPoint, position: bestPosition };
 }
+
+/**
+ * Map PowerPoint connection site ID to a connection point name
+ * This handles shapes with more than 4 connection points and uses actual position to determine direction
+ */
+function mapConnectionSiteToPointName(siteId: string, totalSites: number, site?: { id: string; point: Point }): string {
+  // For shapes with standard 4 connection points, map to cardinal directions
+  if (totalSites <= 4) {
+    const siteIndex = parseInt(siteId) || 0;
+    const pointMap = ['top', 'right', 'bottom', 'left'];
+    return pointMap[siteIndex] || 'top';
+  }
+  
+  // For shapes with more connection points, use the site ID directly
+  // This allows the routing system to handle complex shapes properly
+  // The PowerPoint routing system can work with these site IDs
+  return siteId;
+}
+
 
 /**
  * Initialize connector creation state
@@ -276,14 +483,15 @@ export function updateConnectorCreation(
 }
 
 /**
- * Complete connector creation
+ * Complete connector creation using nearest point logic based on drag position
+ * Keeps the original start connection point from when connector creation began
  */
 export function completeConnectorCreation(
   state: ConnectorCreationState,
   targetElement: SlideElement,
   allElements: SlideElement[]
 ): DynamicConnectorResult | null {
-  if (!state.startElementId || !state.startPosition) {
+  if (!state.startElementId || !state.startPosition || !state.currentPosition || !state.startConnectionPoint) {
     return null;
   }
 
@@ -292,8 +500,14 @@ export function completeConnectorCreation(
     return null;
   }
 
-  // Calculate optimal connection
-  const result = calculateShortestPath(startElement, targetElement, allElements);
+  // Use nearest point connection for target, but keep original start connection point
+  const result = calculateNearestPointConnection(
+    startElement, 
+    targetElement, 
+    state.currentPosition, 
+    allElements,
+    state.startConnectionPoint // Pass the original start connection point
+  );
   
   return result;
 }

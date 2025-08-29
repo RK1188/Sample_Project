@@ -111,7 +111,23 @@ export function getElementConnectionPoint(element: SlideElement, connectionPoint
 
       // Find the specific connection site by connection point
       const siteIndex = getConnectionSiteIndex(connectionPoint);
-      if (connectionSites[siteIndex]) {
+      
+      // If siteIndex is -1, it means we have a position-based connection point
+      // In this case, we need to parse the position from the connection point name
+      if (siteIndex === -1) {
+        if (connectionPoint.startsWith('pos_')) {
+          // Parse position from connection point name like "pos_123.4_567.8"
+          const parts = connectionPoint.replace('pos_', '').split('_');
+          if (parts.length === 2) {
+            const x = parseFloat(parts[0]);
+            const y = parseFloat(parts[1]);
+            if (!isNaN(x) && !isNaN(y)) {
+              return { x, y };
+            }
+          }
+        }
+        // Fall through to basic edge points for invalid position strings
+      } else if (connectionSites[siteIndex]) {
         return connectionSites[siteIndex].point;
       }
     } catch (error) {
@@ -146,6 +162,11 @@ function getConnectionSiteIndex(connectionPoint: string): number {
     'left': 3,
     'center': 0 // Default to top if center is requested
   };
+  
+  // Handle position-based connection points by returning -1 to indicate fallback needed
+  if (connectionPoint.startsWith('pos_') || connectionPoint.startsWith('site_')) {
+    return -1;
+  }
   
   return indexMap[connectionPoint] || 0;
 }
