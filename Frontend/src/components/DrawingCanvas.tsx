@@ -14,14 +14,19 @@ import TableContextMenu from './TableContextMenu';
 import ChartRenderer from './ChartRenderer';
 import ChartModal from './ChartModal';
 import AdjustmentHandles from './AdjustmentHandles';
-import { updateConnectorPositions } from '../utils/groupUtils';
+import { updateConnectorPositions, getElementConnectionPoint } from '../utils/groupUtils';
 import {
   calculateShortestPath,
   calculateNearestPointConnection,
   generatePreviewPath,
   findTargetElementUnderMouse,
   completeConnectorCreation,
-  getBestConnectionPoint
+  getBestConnectionPoint,
+  findNearestConnectionPointAcrossAllShapes,
+  getConnectionPointFromMousePosition,
+  findShapeUnderMouse,
+  findShapeWithConnectionSuggestion,
+  calculateConnectionSuggestion
 } from '../utils/dynamicConnectorCreation';
 import { routePowerPointElbowConnector } from '../utils/powerPointConnectorRouting';
 
@@ -81,7 +86,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     return Math.round(value / gridSize) * gridSize;
   };
 
-  // Handle dynamic connector creation mouse events
+  // Enhanced dynamic connector creation with Google Slides-style real-time suggestions
   const handleConnectorMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (!connectorCreation.isActive || !connectorCreation.startPosition || !currentSlide) return;
 
@@ -89,28 +94,47 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const pos = stage?.getPointerPosition();
     if (!pos) return;
 
-    // Find target element under mouse (excluding start element and connectors)
-    const targetElement = findTargetElementUnderMouse(pos, currentSlide.elements, connectorCreation.startElementId || '');
-    let targetConnectionPoint: string | undefined;
+    const startElement = currentSlide.elements.find(el => el.id === connectorCreation.startElementId);
+    if (!startElement || !connectorCreation.startConnectionPoint) return;
 
-    if (targetElement) {
-      // Get the best connection point on the target element closest to current mouse position
-      const bestPoint = getBestConnectionPoint(targetElement, pos);
-      targetConnectionPoint = bestPoint.connectionPoint;
-      
-      // Debug log to see if target connection point is changing
-      console.log('Dynamic connector move - Target element:', targetElement.id, 
-                  'Connection point:', targetConnectionPoint, 
-                  'Mouse pos:', pos);
-    }
+    // Enhanced connection suggestion with adaptive radius and multiple point evaluation
+    const suggestion = calculateConnectionSuggestion(
+      startElement,
+      connectorCreation.startConnectionPoint,
+      pos,
+      currentSlide.elements,
+      120 // increased suggestion radius for better UX
+    );
 
-    // Update connector creation state with current mouse position
+    // Additional check for ultra-close proximity for immediate snapping feedback
+    const ultraCloseThreshold = 25;
+    const nearestAcrossAll = findNearestConnectionPointAcrossAllShapes(
+      pos,
+      currentSlide.elements,
+      startElement.id
+    );
+
+    const shouldShowUltraCloseHint = nearestAcrossAll.distance <= ultraCloseThreshold;
+    
+    console.log('Enhanced connector move tracking:', {
+      hasTarget: suggestion.hasTarget,
+      targetElement: suggestion.targetElement?.id,
+      targetConnectionPoint: suggestion.targetConnectionPoint,
+      isInsideTarget: suggestion.isInsideTarget,
+      distance: suggestion.distance,
+      ultraCloseHint: shouldShowUltraCloseHint,
+      nearestDistance: nearestAcrossAll.distance,
+      mousePos: pos
+    });
+
+    // Update connector creation state with comprehensive data
     dispatch({
       type: 'UPDATE_CONNECTOR_CREATION',
       payload: {
         mousePosition: pos,
-        targetElement: targetElement || undefined,
-        targetConnectionPoint
+        targetElement: suggestion.targetElement || nearestAcrossAll.element || undefined,
+        targetConnectionPoint: suggestion.hasTarget ? suggestion.targetConnectionPoint : 
+                               shouldShowUltraCloseHint ? nearestAcrossAll.connectionPoint : undefined
       }
     });
   }, [connectorCreation, currentSlide, dispatch]);
@@ -122,45 +146,111 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const pos = stage?.getPointerPosition();
     if (!pos) return;
 
-    // Find target element under mouse
-    const targetElement = findTargetElementUnderMouse(pos, currentSlide.elements, connectorCreation.startElementId);
-    
-    if (targetElement && targetElement.id !== connectorCreation.startElementId) {
-      // Complete the connection
-      const startElement = currentSlide.elements.find(el => el.id === connectorCreation.startElementId);
-      if (startElement) {
-        const result = calculateNearestPointConnection(startElement, targetElement, pos, currentSlide.elements, connectorCreation.startConnectionPoint);
+    const startElement = currentSlide.elements.find(el => el.id === connectorCreation.startElementId);
+    if (!startElement || !connectorCreation.startConnectionPoint) return;
+
+    // Enhanced snap-to-nearest connection point logic with multiple fallback strategies
+    let targetElement: SlideElement | null = null;
+    let targetConnectionPoint: string = 'center';
+    let shouldCreateConnection = false;
+
+    // Strategy 1: Check for ultra-close proximity (within 25 pixels) - immediate snap
+    const nearestAcrossAll = findNearestConnectionPointAcrossAllShapes(
+      pos,
+      currentSlide.elements,
+      connectorCreation.startElementId
+    );
+
+    if (nearestAcrossAll.element && nearestAcrossAll.distance <= 25) {
+      // Ultra-close: immediate snap to nearest point regardless of shape boundaries
+      targetElement = nearestAcrossAll.element;
+      targetConnectionPoint = nearestAcrossAll.connectionPoint;
+      shouldCreateConnection = true;
+      
+      console.log('Snap strategy 1: Ultra-close proximity snap', {
+        distance: nearestAcrossAll.distance,
+        targetElement: targetElement.id,
+        connectionPoint: targetConnectionPoint
+      });
+    } else {
+      // Strategy 2: Use enhanced connection suggestion system for shapes within reasonable range
+      const suggestion = findShapeWithConnectionSuggestion(
+        pos,
+        currentSlide.elements,
+        connectorCreation.startElementId,
+        120 // expanded suggestion radius
+      );
+      
+      if (suggestion.element && suggestion.distance <= 120) {
+        targetElement = suggestion.element;
+        targetConnectionPoint = suggestion.connectionPoint;
+        shouldCreateConnection = true;
         
-        // Create the connector element
-        const connectorElement = {
-          id: uuidv4(),
-          type: 'line' as const,
-          isConnector: true,
-          connectorType: state.connectorType || 'elbow',
-          startPoint: result.startPoint,
-          endPoint: result.endPoint,
-          startElementId: result.startElementId,
-          endElementId: result.endElementId,
-          startConnectionPoint: result.startConnectionPoint,
-          endConnectionPoint: result.endConnectionPoint,
-          stroke: '#333333',
-          strokeWidth: 2,
-          strokeStyle: 'solid' as const,
-          arrowEnd: true,
-          x: 0,
-          y: 0,
-          rotation: 0,
-          pathData: result.path
-        };
-        
-        dispatch({
-          type: 'ADD_ELEMENT',
-          payload: {
-            slideId: currentSlide.id,
-            element: connectorElement as any
-          }
+        console.log('Snap strategy 2: Enhanced suggestion system', {
+          distance: suggestion.distance,
+          targetElement: targetElement.id,
+          connectionPoint: targetConnectionPoint,
+          isInsideShape: suggestion.isInsideShape
         });
       }
+    }
+    
+    // Create connection if we found a valid target
+    if (shouldCreateConnection && targetElement && targetElement.id !== connectorCreation.startElementId) {
+      // Use the exact connection point position for accurate routing
+      const result = calculateNearestPointConnection(
+        startElement, 
+        targetElement, 
+        pos, // Use mouse position for routing calculations
+        currentSlide.elements,
+        connectorCreation.startConnectionPoint
+      );
+      
+      // Create the connector element
+      const connectorElement = {
+        id: uuidv4(),
+        type: 'line' as const,
+        isConnector: true,
+        connectorType: state.connectorType || 'elbow',
+        startPoint: result.startPoint,
+        endPoint: result.endPoint,
+        startElementId: result.startElementId,
+        endElementId: result.endElementId,
+        startConnectionPoint: result.startConnectionPoint,
+        endConnectionPoint: result.endConnectionPoint,
+        stroke: '#333333',
+        strokeWidth: 2,
+        strokeStyle: 'solid' as const,
+        arrowEnd: true,
+        x: 0,
+        y: 0,
+        rotation: 0,
+        pathData: result.path
+      };
+      
+      console.log('Creating enhanced Google Slides-style connector:', {
+        start: result.startElementId,
+        end: result.endElementId,
+        startCP: result.startConnectionPoint,
+        endCP: result.endConnectionPoint,
+        mousePos: pos,
+        snapStrategy: nearestAcrossAll.distance <= 25 ? 'ultra-close' : 'suggestion-system',
+        finalDistance: nearestAcrossAll.distance
+      });
+      
+      dispatch({
+        type: 'ADD_ELEMENT',
+        payload: {
+          slideId: currentSlide.id,
+          element: connectorElement as any
+        }
+      });
+    } else {
+      console.log('No valid connection target found', {
+        mousePosition: pos,
+        nearestDistance: nearestAcrossAll.distance,
+        hasNearestElement: !!nearestAcrossAll.element
+      });
     }
 
     // Reset connector creation state
@@ -465,15 +555,17 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         const stage = e.target.getStage();
         const pos = stage?.getPointerPosition();
         if (pos) {
-          // Get the best connection point closest to where the user clicked
-          const bestPoint = getBestConnectionPoint(element, pos);
+          // When user clicks anywhere inside the shape, find the connection point nearest to the click
+          const connectionPoint = getConnectionPointFromMousePosition(element, pos);
+          
+          console.log('Starting connector from element:', elementId, 'at connection point:', connectionPoint.connectionPoint, 'click pos:', pos);
           
           dispatch({
             type: 'START_CONNECTOR_CREATION',
             payload: {
               elementId: elementId,
-              connectionPoint: bestPoint.connectionPoint,
-              position: bestPoint.position
+              connectionPoint: connectionPoint.connectionPoint,
+              position: connectionPoint.position
             }
           });
           return;
@@ -1358,89 +1450,120 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             />
           )}
           
-          {/* Show dynamic connector preview line */}
+          {/* Show dynamic connector preview line with Google Slides-style suggestions */}
           {connectorCreation.isActive && connectorCreation.startPosition && connectorCreation.currentPosition && currentSlide && (
-            <Line
-              points={(() => {
-                if (!connectorCreation.startElementId || !connectorCreation.startConnectionPoint) {
-                  return [
-                    connectorCreation.startPosition.x,
-                    connectorCreation.startPosition.y,
-                    connectorCreation.currentPosition.x,
-                    connectorCreation.currentPosition.y
-                  ];
-                }
+            (() => {
+              const startElement = currentSlide.elements.find(el => el.id === connectorCreation.startElementId);
+              if (!startElement || !connectorCreation.startConnectionPoint) {
+                return (
+                  <Line
+                    points={[
+                      connectorCreation.startPosition.x,
+                      connectorCreation.startPosition.y,
+                      connectorCreation.currentPosition.x,
+                      connectorCreation.currentPosition.y
+                    ]}
+                    stroke="#0066FF"
+                    strokeWidth={2}
+                    dash={[5, 5]}
+                    listening={false}
+                  />
+                );
+              }
+              
+              // Use the enhanced connection suggestion system for preview with expanded radius
+              const suggestion = calculateConnectionSuggestion(
+                startElement,
+                connectorCreation.startConnectionPoint,
+                connectorCreation.currentPosition,
+                currentSlide.elements,
+                150 // Increased suggestion radius for better preview
+              );
+              
+              // Parse the path data to convert to points array for Konva Line
+              const pathToPoints = (pathData: string): number[] => {
+                const commands = pathData.split(/(?=[ML])/);
+                const points: number[] = [];
                 
-                const startElement = currentSlide.elements.find(el => el.id === connectorCreation.startElementId);
-                if (!startElement) {
-                  return [
-                    connectorCreation.startPosition.x,
-                    connectorCreation.startPosition.y,
-                    connectorCreation.currentPosition.x,
-                    connectorCreation.currentPosition.y
-                  ];
-                }
+                commands.forEach(command => {
+                  if (command.startsWith('M') || command.startsWith('L')) {
+                    const coords = command.slice(1).trim().split(/\s+/);
+                    if (coords.length >= 2) {
+                      points.push(parseFloat(coords[0]), parseFloat(coords[1]));
+                    }
+                  }
+                });
                 
-                const targetElement = connectorCreation.targetElementId 
-                  ? currentSlide.elements.find(el => el.id === connectorCreation.targetElementId)
-                  : undefined;
+                return points;
+              };
+              
+              // Always show a preview line - either to suggested target or to cursor
+              let points: number[] = [];
+              let strokeColor = "#0066FF";
+              let strokeWidth = 2;
+              let dashPattern = [5, 5];
+              let opacity = 0.7;
+              
+              if (suggestion.hasTarget && suggestion.previewPath) {
+                // Has a target - use the calculated path
+                points = pathToPoints(suggestion.previewPath);
                 
-                if (targetElement && connectorCreation.targetConnectionPoint) {
-                  // Use the stored target connection point instead of recalculating
-                  // This ensures we show the exact connection point that was determined dynamically
-                  const result = routePowerPointElbowConnector(
-                    startElement,
-                    targetElement,
-                    connectorCreation.startConnectionPoint,
-                    connectorCreation.targetConnectionPoint,
-                    currentSlide.elements
-                  );
-                  
-                  // Debug log to see what connection points are being used in preview
-                  console.log('Preview line - Start CP:', connectorCreation.startConnectionPoint, 'Target CP:', connectorCreation.targetConnectionPoint, 'Start pos:', result.startConnectionSite.point, 'End pos:', result.endConnectionSite.point);
-                  
-                  // Convert to simple elbow points for preview
-                  const startPos = result.startConnectionSite.point;
-                  const endPos = result.endConnectionSite.point;
-                  const midX = (startPos.x + endPos.x) / 2;
-                  const midY = (startPos.y + endPos.y) / 2;
-                  
-                  return [
-                    startPos.x, startPos.y,
-                    midX, startPos.y,
-                    midX, endPos.y,
-                    endPos.x, endPos.y
-                  ];
-                } else if (targetElement) {
-                  // Fallback: if no stored target connection point, recalculate
-                  const result = calculateNearestPointConnection(startElement, targetElement, connectorCreation.currentPosition, currentSlide.elements, connectorCreation.startConnectionPoint);
-                  
-                  const startPos = result.startPoint;
-                  const endPos = result.endPoint;
-                  const midX = (startPos.x + endPos.x) / 2;
-                  const midY = (startPos.y + endPos.y) / 2;
-                  
-                  return [
-                    startPos.x, startPos.y,
-                    midX, startPos.y,
-                    midX, endPos.y,
-                    endPos.x, endPos.y
-                  ];
+                if (suggestion.isInsideTarget) {
+                  // Inside the target shape - strong green indication
+                  strokeColor = "#34A853";
+                  strokeWidth = 4;
+                  dashPattern = [10, 3];
+                  opacity = 0.95;
+                } else if (suggestion.distance <= 25) {
+                  // Very close to connection point - orange for immediate snap
+                  strokeColor = "#FF6B35";
+                  strokeWidth = 4;
+                  dashPattern = [8, 2];
+                  opacity = 0.95;
+                } else if (suggestion.distance <= 60) {
+                  // Close to connection point - Google Slides blue
+                  strokeColor = "#4285F4";
+                  strokeWidth = 3;
+                  dashPattern = [8, 4];
+                  opacity = 0.9;
                 } else {
-                  // Show simple line to mouse cursor
-                  return [
-                    connectorCreation.startPosition.x,
-                    connectorCreation.startPosition.y,
-                    connectorCreation.currentPosition.x,
-                    connectorCreation.currentPosition.y
-                  ];
+                  // Within suggestion range - lighter blue
+                  strokeColor = "#4285F4";
+                  strokeWidth = 2.5;
+                  dashPattern = [6, 6];
+                  opacity = 0.75;
                 }
-              })()}
-              stroke={connectorCreation.targetElementId ? "#4285f4" : "#0066FF"}
-              strokeWidth={2}
-              dash={[5, 5]}
-              listening={false}
-            />
+              } else {
+                // No target - show direct line to cursor position
+                const startPos = getElementConnectionPoint(startElement, connectorCreation.startConnectionPoint);
+                points = [
+                  startPos.x,
+                  startPos.y,
+                  connectorCreation.currentPosition.x,
+                  connectorCreation.currentPosition.y
+                ];
+                strokeColor = "#666666";
+                strokeWidth = 2;
+                dashPattern = [3, 3];
+                opacity = 0.5;
+              }
+              
+              // Ensure we have valid points before rendering
+              if (points.length >= 4) {
+                return (
+                  <Line
+                    points={points}
+                    stroke={strokeColor}
+                    strokeWidth={strokeWidth}
+                    dash={dashPattern}
+                    listening={false}
+                    opacity={opacity}
+                  />
+                );
+              }
+              
+              return null;
+            })()
           )}
           
           {/* Transformer for selected elements */}
@@ -1451,11 +1574,23 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         <Layer listening={true}>
           {(currentTool.id === 'connector' || connectorCreation.isActive) && currentSlide.elements.map(element => {
             if (element.type === 'shape' || element.type === 'text' || element.type === 'group') {
+              const isTargetElement = connectorCreation.targetElementId === element.id;
+              const highlightedPoint = isTargetElement ? connectorCreation.targetConnectionPoint : undefined;
+              
+              // Determine if we should show this element's connection points as suggestions
+              const showSuggestion = connectorCreation.isActive && element.id !== connectorCreation.startElementId;
+              const mousePos = connectorCreation.currentPosition;
+              
               return (
                 <ConnectionPoints
                   key={`connection-${element.id}`}
                   element={element}
                   visible={true}
+                  highlightedConnectionPoint={highlightedPoint}
+                  isDragTarget={isTargetElement}
+                  showSuggestion={showSuggestion}
+                  suggestionDistance={150}
+                  mousePosition={mousePos}
                   onConnectionPointClick={(elementId, connectionPoint, position) => {
                     console.log('DrawingCanvas: onConnectionPointClick called', {
                       elementId,

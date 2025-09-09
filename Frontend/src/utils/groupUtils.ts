@@ -184,6 +184,7 @@ export function findConnectedConnectors(elementId: string, allElements: SlideEle
 
 /**
  * Update connector positions when an element (including groups) is moved
+ * Enhanced with dynamic reconnection to always snap to nearest connection points
  */
 export function updateConnectorPositions(
   movedElement: SlideElement,
@@ -196,23 +197,78 @@ export function updateConnectorPositions(
     const connectorElement = connector as any;
     let startPoint = connectorElement.startPoint;
     let endPoint = connectorElement.endPoint;
+    let startConnectionPoint = connectorElement.startConnectionPoint;
+    let endConnectionPoint = connectorElement.endConnectionPoint;
     let connectionChanged = false;
 
-    // Update start point if connected to moved element
-    if (connectorElement.startElementId === movedElement.id && connectorElement.startConnectionPoint) {
-      const newStartPoint = getElementConnectionPoint(movedElement, connectorElement.startConnectionPoint);
-      if (startPoint.x !== newStartPoint.x || startPoint.y !== newStartPoint.y) {
-        startPoint = newStartPoint;
-        connectionChanged = true;
-      }
+    // Get the other connected element (not the one being moved)
+    let otherElement: SlideElement | undefined;
+    if (connectorElement.startElementId === movedElement.id) {
+      otherElement = allElements.find(el => el.id === connectorElement.endElementId);
+    } else if (connectorElement.endElementId === movedElement.id) {
+      otherElement = allElements.find(el => el.id === connectorElement.startElementId);
     }
 
-    // Update end point if connected to moved element
-    if (connectorElement.endElementId === movedElement.id && connectorElement.endConnectionPoint) {
-      const newEndPoint = getElementConnectionPoint(movedElement, connectorElement.endConnectionPoint);
-      if (endPoint.x !== newEndPoint.x || endPoint.y !== newEndPoint.y) {
-        endPoint = newEndPoint;
-        connectionChanged = true;
+    // Dynamic reconnection: recalculate best connection points based on current positions
+    if (otherElement) {
+      // Update start point if connected to moved element
+      if (connectorElement.startElementId === movedElement.id) {
+        const bestStartPoint = getBestConnectionPointForElement(movedElement, otherElement);
+        const newStartPoint = bestStartPoint.position;
+        
+        if (startPoint.x !== newStartPoint.x || startPoint.y !== newStartPoint.y || 
+            startConnectionPoint !== bestStartPoint.connectionPoint) {
+          startPoint = newStartPoint;
+          startConnectionPoint = bestStartPoint.connectionPoint;
+          connectionChanged = true;
+        }
+      }
+
+      // Update end point if connected to moved element
+      if (connectorElement.endElementId === movedElement.id) {
+        const bestEndPoint = getBestConnectionPointForElement(movedElement, otherElement);
+        const newEndPoint = bestEndPoint.position;
+        
+        if (endPoint.x !== newEndPoint.x || endPoint.y !== newEndPoint.y ||
+            endConnectionPoint !== bestEndPoint.connectionPoint) {
+          endPoint = newEndPoint;
+          endConnectionPoint = bestEndPoint.connectionPoint;
+          connectionChanged = true;
+        }
+      }
+
+      // Also recalculate the static end to ensure optimal connection
+      if (connectorElement.startElementId === movedElement.id && otherElement) {
+        const bestEndPoint = getBestConnectionPointForElement(otherElement, movedElement);
+        if (endConnectionPoint !== bestEndPoint.connectionPoint) {
+          endPoint = bestEndPoint.position;
+          endConnectionPoint = bestEndPoint.connectionPoint;
+          connectionChanged = true;
+        }
+      } else if (connectorElement.endElementId === movedElement.id && otherElement) {
+        const bestStartPoint = getBestConnectionPointForElement(otherElement, movedElement);
+        if (startConnectionPoint !== bestStartPoint.connectionPoint) {
+          startPoint = bestStartPoint.position;
+          startConnectionPoint = bestStartPoint.connectionPoint;
+          connectionChanged = true;
+        }
+      }
+    } else {
+      // Fallback to original logic if other element not found
+      if (connectorElement.startElementId === movedElement.id && connectorElement.startConnectionPoint) {
+        const newStartPoint = getElementConnectionPoint(movedElement, connectorElement.startConnectionPoint);
+        if (startPoint.x !== newStartPoint.x || startPoint.y !== newStartPoint.y) {
+          startPoint = newStartPoint;
+          connectionChanged = true;
+        }
+      }
+
+      if (connectorElement.endElementId === movedElement.id && connectorElement.endConnectionPoint) {
+        const newEndPoint = getElementConnectionPoint(movedElement, connectorElement.endConnectionPoint);
+        if (endPoint.x !== newEndPoint.x || endPoint.y !== newEndPoint.y) {
+          endPoint = newEndPoint;
+          connectionChanged = true;
+        }
       }
     }
 
@@ -220,7 +276,9 @@ export function updateConnectorPositions(
     if (connectionChanged) {
       const updateData: any = {
         startPoint,
-        endPoint
+        endPoint,
+        startConnectionPoint,
+        endConnectionPoint
       };
 
       // CRITICAL FIX: Clear custom path data and adjustment points when connection points change
@@ -243,4 +301,93 @@ export function updateConnectorPositions(
   });
 
   return updates;
+}
+
+/**
+ * Local function to find best connection point between two elements
+ * This avoids circular dependency with dynamicConnectorCreation.ts
+ */
+function getBestConnectionPointForElement(
+  element: SlideElement,
+  targetElement: SlideElement
+): { connectionPoint: string; position: Point } {
+  // Calculate center of target element for reference
+  const targetCenter = {
+    x: (targetElement.x || 0) + (targetElement.width || 100) / 2,
+    y: (targetElement.y || 0) + (targetElement.height || 100) / 2
+  };
+
+  // For shape elements, use PowerPoint connection sites if available
+  if (element.type === 'shape') {
+    const shapeElement = element as any;
+    const shapeType = shapeElement.shapeType || 'rectangle';
+    
+    try {
+      const bounds = {
+        x: element.x || 0,
+        y: element.y || 0,
+        width: element.width || 100,
+        height: element.height || 100
+      };
+
+      // Calculate all available connection sites for this shape
+      const connectionSites = calculateConnectionSites(
+        shapeType,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height
+      );
+
+      // Find the nearest connection site to the target center
+      const nearestSite = findNearestConnectionSite(connectionSites, targetCenter);
+      
+      // Map the connection site back to a connection point name
+      const connectionPointName = mapConnectionSiteToPointName(nearestSite.id, connectionSites.length);
+      
+      return {
+        connectionPoint: connectionPointName,
+        position: nearestSite.point
+      };
+    } catch (error) {
+      // Fall through to basic connection points
+    }
+  }
+
+  // Fallback to basic connection points for non-shapes or when PowerPoint sites fail
+  const connectionPoints = ['top', 'right', 'bottom', 'left', 'center'];
+  let bestPoint = 'center';
+  let shortestDistance = Infinity;
+  let bestPosition = getElementConnectionPoint(element, 'center');
+
+  for (const pointName of connectionPoints) {
+    const position = getElementConnectionPoint(element, pointName);
+    const distance = Math.sqrt(
+      Math.pow(position.x - targetCenter.x, 2) + 
+      Math.pow(position.y - targetCenter.y, 2)
+    );
+    
+    if (distance < shortestDistance) {
+      shortestDistance = distance;
+      bestPoint = pointName;
+      bestPosition = position;
+    }
+  }
+  
+  return { connectionPoint: bestPoint, position: bestPosition };
+}
+
+/**
+ * Map PowerPoint connection site ID to a connection point name (local version)
+ */
+function mapConnectionSiteToPointName(siteId: string, totalSites: number): string {
+  // For shapes with standard 4 connection points, map to cardinal directions
+  if (totalSites <= 4) {
+    const siteIndex = parseInt(siteId) || 0;
+    const pointMap = ['top', 'right', 'bottom', 'left'];
+    return pointMap[siteIndex] || 'top';
+  }
+  
+  // For shapes with more connection points, use the site ID directly
+  return siteId;
 }
